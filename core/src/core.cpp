@@ -216,6 +216,7 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["moduleInstances"]["Network Sink"] = "network_sink";
 
     defConfig["moduleInstances"]["Radio"] = "radio";
+    defConfig["moduleInstances"]["FLRC Decoder"] = "flrc_decoder";
 
     defConfig["moduleInstances"]["Frequency Manager"] = "frequency_manager";
     defConfig["moduleInstances"]["Recorder"] = "recorder";
