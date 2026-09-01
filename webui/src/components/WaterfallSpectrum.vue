@@ -8,7 +8,6 @@ import {
   currentLang
 } from '@/composables/useSdrEngine'
 import { generateColormapLut } from '@/composables/useColormaps'
-import { ZoomIn, ZoomOut, Palette, Sliders } from 'lucide-vue-next'
 
 const spectrumCanvas = ref<HTMLCanvasElement | null>(null)
 const waterfallCanvas = ref<HTMLCanvasElement | null>(null)
@@ -28,9 +27,9 @@ const peakFft = new Float32Array(fftSize).fill(-120)
 
 // Dragging & VFO interaction state
 const isDraggingVfo = ref(false)
-const isResizingVfo = ref(false)
 let dragStartX = 0
 let initialOffsetHz = 0
+let activeCanvasWidth = 1000
 
 watch(() => spectrumSettings.colormap, (newMap) => {
   colormapLut = generateColormapLut(newMap)
@@ -41,6 +40,7 @@ function handleResize() {
   const rect = containerRef.value.getBoundingClientRect()
   const w = Math.floor(rect.width)
   const h = Math.floor(rect.height)
+  activeCanvasWidth = w
 
   const specH = Math.floor(h * 0.38)
   const wtfH = h - specH
@@ -57,6 +57,12 @@ function handleResize() {
   offscreenCanvas.width = w
   offscreenCanvas.height = wtfH
   offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true })
+
+  // Fill offscreen initial background
+  if (offscreenCtx) {
+    offscreenCtx.fillStyle = '#090b10'
+    offscreenCtx.fillRect(0, 0, w, wtfH)
+  }
 }
 
 function updateSimulatedFft(time: number) {
@@ -145,7 +151,7 @@ function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: nu
   const vfoWidthPx = (vfo.bandwidthHz / sourceConfig.sampleRateHz) * width
   const vfoLeft = vfoCenterX - vfoWidthPx / 2
 
-  ctx.fillStyle = 'rgba(59, 130, 246, 0.15)'
+  ctx.fillStyle = 'rgba(59, 130, 246, 0.18)'
   ctx.fillRect(vfoLeft, 0, vfoWidthPx, height)
 
   ctx.strokeStyle = '#3b82f6'
@@ -206,45 +212,51 @@ function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: nu
 function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: number) {
   if (!offscreenCanvas || !offscreenCtx) return
 
-  // 1. Shift offscreen canvas down by 1 pixel
-  offscreenCtx.drawImage(offscreenCanvas, 0, 0, width, height - 1, 0, 1, width, height - 1)
+  // 1. Only advance buffer when actually playing
+  if (isPlaying.value) {
+    // Shift offscreen canvas down by 1 pixel
+    offscreenCtx.drawImage(offscreenCanvas, 0, 0, width, height - 1, 0, 1, width, height - 1)
 
-  // 2. Generate new 1-pixel row
-  const rowImg = offscreenCtx.createImageData(width, 1)
-  const minDb = spectrumSettings.minDb
-  const maxDb = spectrumSettings.maxDb
-  const dbRange = maxDb - minDb
+    // Generate new 1-pixel row
+    const rowImg = offscreenCtx.createImageData(width, 1)
+    const minDb = spectrumSettings.minDb
+    const maxDb = spectrumSettings.maxDb
+    const dbRange = maxDb - minDb
 
-  for (let x = 0; x < width; x++) {
-    const binIdx = Math.floor((x / width) * fftSize)
-    const val = currentFft[binIdx]
-    const norm = Math.min(1, Math.max(0, (val - minDb) / dbRange))
-    const lutIdx = Math.floor(norm * 255)
+    for (let x = 0; x < width; x++) {
+      const binIdx = Math.floor((x / width) * fftSize)
+      const val = currentFft[binIdx]
+      const norm = Math.min(1, Math.max(0, (val - minDb) / dbRange))
+      const lutIdx = Math.floor(norm * 255)
 
-    rowImg.data[x * 4 + 0] = colormapLut[lutIdx * 4 + 0]
-    rowImg.data[x * 4 + 1] = colormapLut[lutIdx * 4 + 1]
-    rowImg.data[x * 4 + 2] = colormapLut[lutIdx * 4 + 2]
-    rowImg.data[x * 4 + 3] = 255
+      rowImg.data[x * 4 + 0] = colormapLut[lutIdx * 4 + 0]
+      rowImg.data[x * 4 + 1] = colormapLut[lutIdx * 4 + 1]
+      rowImg.data[x * 4 + 2] = colormapLut[lutIdx * 4 + 2]
+      rowImg.data[x * 4 + 3] = 255
+    }
+
+    offscreenCtx.putImageData(rowImg, 0, 0)
   }
 
-  offscreenCtx.putImageData(rowImg, 0, 0)
-
-  // 3. Draw offscreen buffer to visible canvas
+  // 2. Clear visible canvas and draw current waterfall image
+  ctx.clearRect(0, 0, width, height)
   ctx.drawImage(offscreenCanvas, 0, 0)
 
-  // 4. Draw VFO indicator overlay on Waterfall
+  // 3. Always draw updated VFO highlight overlay (synced with spectrum at all times!)
   const vfoCenterX = width * (0.5 + vfo.offsetHz / sourceConfig.sampleRateHz)
   const vfoWidthPx = (vfo.bandwidthHz / sourceConfig.sampleRateHz) * width
   const vfoLeft = vfoCenterX - vfoWidthPx / 2
 
-  ctx.fillStyle = 'rgba(59, 130, 246, 0.12)'
+  ctx.fillStyle = 'rgba(59, 130, 246, 0.15)'
   ctx.fillRect(vfoLeft, 0, vfoWidthPx, height)
 
-  ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)'
-  ctx.lineWidth = 1
+  ctx.strokeStyle = 'rgba(59, 130, 246, 0.9)'
+  ctx.lineWidth = 1.5
   ctx.strokeRect(vfoLeft, 0, vfoWidthPx, height)
 
+  // Center tuning red line
   ctx.strokeStyle = '#ef4444'
+  ctx.lineWidth = 1.5
   ctx.beginPath()
   ctx.moveTo(vfoCenterX, 0)
   ctx.lineTo(vfoCenterX, height)
@@ -253,14 +265,17 @@ function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: n
 
 function loop(t: number) {
   const time = t * 0.001
-  updateSimulatedFft(time)
+  if (isPlaying.value) {
+    updateSimulatedFft(time)
+  }
 
   if (spectrumCanvas.value) {
     const ctx = spectrumCanvas.value.getContext('2d')
     if (ctx) renderSpectrum(ctx, spectrumCanvas.value.width, spectrumCanvas.value.height)
   }
 
-  if (waterfallCanvas.value && isPlaying.value) {
+  // Always redraw waterfall overlay so VFO moves smoothly whether playing or stopped!
+  if (waterfallCanvas.value) {
     const ctx = waterfallCanvas.value.getContext('2d')
     if (ctx) renderWaterfall(ctx, waterfallCanvas.value.width, waterfallCanvas.value.height)
   }
@@ -268,11 +283,12 @@ function loop(t: number) {
   animFrameId = requestAnimationFrame(loop)
 }
 
-function onMouseDown(e: MouseEvent) {
-  if (!spectrumCanvas.value) return
-  const rect = spectrumCanvas.value.getBoundingClientRect()
+function onCanvasMouseDown(e: MouseEvent, targetCanvas: HTMLCanvasElement | null) {
+  if (!targetCanvas) return
+  const rect = targetCanvas.getBoundingClientRect()
   const x = e.clientX - rect.left
   const width = rect.width
+  activeCanvasWidth = width
 
   const vfoCenterX = width * (0.5 + vfo.offsetHz / sourceConfig.sampleRateHz)
   const vfoWidthPx = (vfo.bandwidthHz / sourceConfig.sampleRateHz) * width
@@ -282,36 +298,45 @@ function onMouseDown(e: MouseEvent) {
     dragStartX = e.clientX
     initialOffsetHz = vfo.offsetHz
   } else {
-    // Click to tune directly
+    // Click to tune directly to cursor position
     const freqRatio = x / width - 0.5
     vfo.offsetHz = Math.round(freqRatio * sourceConfig.sampleRateHz)
+    isDraggingVfo.value = true
+    dragStartX = e.clientX
+    initialOffsetHz = vfo.offsetHz
   }
 }
 
-function onMouseMove(e: MouseEvent) {
-  if (!isDraggingVfo.value || !spectrumCanvas.value) return
-  const rect = spectrumCanvas.value.getBoundingClientRect()
+function onGlobalMouseMove(e: MouseEvent) {
+  if (!isDraggingVfo.value || activeCanvasWidth <= 0) return
   const dx = e.clientX - dragStartX
-  const dHz = (dx / rect.width) * sourceConfig.sampleRateHz
+  const dHz = (dx / activeCanvasWidth) * sourceConfig.sampleRateHz
   vfo.offsetHz = Math.round(initialOffsetHz + dHz)
 }
 
-function onMouseUp() {
+function onGlobalMouseUp() {
   isDraggingVfo.value = false
+}
+
+// Mouse Wheel on Canvas to adjust VFO bandwidth
+function onWheel(e: WheelEvent) {
+  e.preventDefault()
+  const delta = e.deltaY < 0 ? 100000 : -100000
+  vfo.bandwidthHz = Math.max(100000, Math.min(sourceConfig.sampleRateHz, vfo.bandwidthHz + delta))
 }
 
 onMounted(() => {
   window.addEventListener('resize', handleResize)
-  window.addEventListener('mousemove', onMouseMove)
-  window.addEventListener('mouseup', onMouseUp)
+  window.addEventListener('mousemove', onGlobalMouseMove)
+  window.addEventListener('mouseup', onGlobalMouseUp)
   handleResize()
   animFrameId = requestAnimationFrame(loop)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
-  window.removeEventListener('mousemove', onMouseMove)
-  window.removeEventListener('mouseup', onMouseUp)
+  window.removeEventListener('mousemove', onGlobalMouseMove)
+  window.removeEventListener('mouseup', onGlobalMouseUp)
   if (animFrameId) cancelAnimationFrame(animFrameId)
 })
 </script>
@@ -330,7 +355,7 @@ onUnmounted(() => {
       <div class="h-3.5 w-px bg-sdr-border"></div>
 
       <!-- Colormap Dropdown -->
-      <select v-model="spectrumSettings.colormap" class="bg-sdr-dark border border-sdr-border rounded px-2 py-0.5 text-slate-300 focus:outline-none focus:border-blue-500 font-sans">
+      <select v-model="spectrumSettings.colormap" class="bg-sdr-dark border border-sdr-border rounded px-2 py-0.5 text-slate-300 focus:outline-none focus:border-blue-500 font-sans text-xs">
         <option value="turbo">Turbo 色谱</option>
         <option value="viridis">Viridis 翠绿</option>
         <option value="plasma">Plasma 等离子</option>
@@ -344,7 +369,8 @@ onUnmounted(() => {
       <canvas
         ref="spectrumCanvas"
         class="w-full h-full block"
-        @mousedown="onMouseDown"
+        @mousedown="(e) => onCanvasMouseDown(e, spectrumCanvas)"
+        @wheel="onWheel"
       ></canvas>
     </div>
 
@@ -358,7 +384,8 @@ onUnmounted(() => {
       <canvas
         ref="waterfallCanvas"
         class="w-full h-full block"
-        @mousedown="onMouseDown"
+        @mousedown="(e) => onCanvasMouseDown(e, waterfallCanvas)"
+        @wheel="onWheel"
       ></canvas>
     </div>
   </div>
