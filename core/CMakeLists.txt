@@ -21,11 +21,12 @@ endif ()
 # Configure backend sources
 if (OPT_BACKEND_GLFW)
     file(GLOB_RECURSE BACKEND_SRC "backends/glfw/*.cpp" "backends/glfw/*.c")
-endif (OPT_BACKEND_GLFW)
-if (OPT_BACKEND_ANDROID)
+elseif (OPT_BACKEND_ANDROID)
     file(GLOB_RECURSE BACKEND_SRC "backends/android/*.cpp" "backends/android/*.c")
     set(BACKEND_SRC ${BACKEND_SRC} ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
-endif (OPT_BACKEND_ANDROID)
+else()
+    file(GLOB_RECURSE BACKEND_SRC "backends/headless/*.cpp" "backends/headless/*.c")
+endif ()
 
 # Add code to dyn lib
 add_library(sdrpp_core SHARED ${SRC} ${BACKEND_SRC})

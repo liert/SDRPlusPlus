@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.13)
 project(sdrpp)
 
-# Backends
-option(OPT_BACKEND_GLFW "Use the GLFW backend" ON)
+# Backends (Disabled Desktop GLFW/ImGui in favor of modern WebUI)
+option(OPT_BACKEND_GLFW "Use the GLFW backend" OFF)
 option(OPT_BACKEND_ANDROID "Use the Android backend" OFF)
 
 # Compatibility Options

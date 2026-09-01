@@ -359,6 +359,11 @@ int sdrpp_main(int argc, char* argv[]) {
 
     core::configManager.release(true);
 
+#if !defined(OPT_BACKEND_GLFW) && !defined(OPT_BACKEND_ANDROID)
+    // Headless Server Mode (Powered by WebUI Frontend)
+    flog::info("Running in Headless DSP Server Engine mode for WebUI...");
+    return server::main();
+#else
     if (serverMode) { return server::main(); }
 
     core::configManager.acquire();
@@ -421,4 +426,5 @@ int sdrpp_main(int argc, char* argv[]) {
 
     flog::info("Exiting successfully");
     return 0;
+#endif
 }
