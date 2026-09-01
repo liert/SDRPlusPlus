@@ -4,8 +4,8 @@ import SourcePanel from './SourcePanel.vue'
 import DemodPanel from './DemodPanel.vue'
 import { currentLang, spectrumSettings } from '@/composables/useSdrEngine'
 import {
-  Radio,
   SlidersHorizontal,
+  Radio,
   Settings2,
   X,
   Pin,
@@ -13,7 +13,7 @@ import {
   BarChart2
 } from 'lucide-vue-next'
 
-const activeTab = ref<'source' | 'demod' | 'display' | null>(null)
+const activeTab = ref<'source' | 'demod' | 'display' | null>('source')
 const isPinned = ref(false)
 
 function toggleTab(tab: 'source' | 'demod' | 'display') {
@@ -35,7 +35,21 @@ function closeDrawer() {
   <div class="relative z-30 flex select-none pointer-events-auto">
     <!-- Left Icon Navigation Strip -->
     <div class="w-12 bg-sdr-panel/90 backdrop-blur-md border-r border-sdr-border flex flex-col items-center py-3 gap-3 shrink-0 shadow-2xl">
-      <!-- Demodulation Tab Button -->
+      <!-- 1. Source Tab Button (First) -->
+      <button
+        @click="toggleTab('source')"
+        :class="[
+          'w-9 h-9 rounded-lg flex items-center justify-center transition-all',
+          activeTab === 'source'
+            ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
+            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+        ]"
+        :title="currentLang === 'zh' ? '射频输入源设置' : 'RF Source'"
+      >
+        <SlidersHorizontal class="w-4 h-4" />
+      </button>
+
+      <!-- 2. Demodulation Tab Button (Second) -->
       <button
         @click="toggleTab('demod')"
         :class="[
@@ -49,21 +63,7 @@ function closeDrawer() {
         <Radio class="w-4 h-4" />
       </button>
 
-      <!-- Source Tab Button -->
-      <button
-        @click="toggleTab('source')"
-        :class="[
-          'w-9 h-9 rounded-lg flex items-center justify-center transition-all',
-          activeTab === 'source'
-            ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
-            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-        ]"
-        :title="currentLang === 'zh' ? '射频硬件源设置' : 'RF Source'"
-      >
-        <SlidersHorizontal class="w-4 h-4" />
-      </button>
-
-      <!-- Display Tab Button -->
+      <!-- 3. Display Tab Button (Third) -->
       <button
         @click="toggleTab('display')"
         :class="[
@@ -85,17 +85,17 @@ function closeDrawer() {
         'w-84 bg-sdr-panel/95 backdrop-blur-2xl border-r border-sdr-border shadow-2xl flex flex-col transition-all duration-300',
         isPinned ? 'relative' : 'absolute left-12 top-0 bottom-0 z-40'
       ]"
-      style="width: 320px;"
+      style="width: 330px;"
     >
       <!-- Drawer Header -->
       <div class="h-11 px-3.5 bg-sdr-dark/80 border-b border-sdr-border flex items-center justify-between shrink-0">
         <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
           <component
-            :is="activeTab === 'demod' ? Radio : (activeTab === 'source' ? SlidersHorizontal : Settings2)"
+            :is="activeTab === 'source' ? SlidersHorizontal : (activeTab === 'demod' ? Radio : Settings2)"
             class="w-3.5 h-3.5 text-cyan-400"
           />
-          <span v-if="activeTab === 'demod'">{{ currentLang === 'zh' ? '数字解调配置' : 'Demodulation' }}</span>
-          <span v-else-if="activeTab === 'source'">{{ currentLang === 'zh' ? '射频输入源' : 'RF Source' }}</span>
+          <span v-if="activeTab === 'source'">{{ currentLang === 'zh' ? '射频输入源设置' : 'RF Source' }}</span>
+          <span v-else-if="activeTab === 'demod'">{{ currentLang === 'zh' ? '数字解调配置' : 'Demodulation' }}</span>
           <span v-else>{{ currentLang === 'zh' ? '频谱显示设置' : 'Display' }}</span>
         </span>
 
@@ -122,13 +122,13 @@ function closeDrawer() {
 
       <!-- Drawer Body Content -->
       <div class="flex-1 overflow-y-auto p-3.5">
-        <!-- Demodulation Panel -->
-        <DemodPanel v-if="activeTab === 'demod'" />
-
-        <!-- Source Panel -->
+        <!-- 1. Source Panel -->
         <SourcePanel v-if="activeTab === 'source'" />
 
-        <!-- Display Settings Panel -->
+        <!-- 2. Demodulation Panel -->
+        <DemodPanel v-if="activeTab === 'demod'" />
+
+        <!-- 3. Display Settings Panel -->
         <div v-if="activeTab === 'display'" class="flex flex-col gap-4 text-xs">
           <div class="flex items-center gap-1.5 text-slate-300 font-semibold">
             <BarChart2 class="w-3.5 h-3.5 text-cyan-400" />
