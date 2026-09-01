@@ -51,7 +51,7 @@ export const demodConfig = reactive<DemodConfig>({
 export const vfo = reactive<VfoState>({
   id: 'vfo-1',
   name: 'FLRC RX',
-  offsetHz: 1400000, // +1.40 MHz for local sample
+  offsetHz: 1400000, // +1.40 MHz default (exact location of H12 signal bursts)
   bandwidthHz: 1800000,
   color: '#3b82f6',
   enabled: true
@@ -74,6 +74,49 @@ export const packetHistory = ref<DecodedPacket[]>([])
 export const crcSuccessRate = computed(() => {
   if (totalPacketsCount.value === 0) return 0
   return ((validCrcCount.value / totalPacketsCount.value) * 100).toFixed(1)
+})
+
+/**
+ * 严格计算当前 VFO 滤波窗口与物理信号频带的重叠度及解调锁定状态：
+ * 录音文件中真实信号分布在：
+ *  - 信道 1: +1.40 MHz (1400 kHz)，带宽约 1.2 MHz (800 kHz ~ 2000 kHz)
+ *  - 信道 2: -1.60 MHz (-1600 kHz)，带宽约 1.2 MHz (-2200 kHz ~ -1000 kHz)
+ */
+export function checkVfoSignalLock() {
+  const vfoMin = vfo.offsetHz - vfo.bandwidthHz / 2
+  const vfoMax = vfo.offsetHz + vfo.bandwidthHz / 2
+
+  // Channel 1: +1.40 MHz
+  const ch1Center = 1400000
+  const ch1Min = 800000
+  const ch1Max = 2000000
+
+  // Channel 2: -1.60 MHz
+  const ch2Center = -1600000
+  const ch2Min = -2200000
+  const ch2Max = -1000000
+
+  const overlap1 = Math.max(0, Math.min(vfoMax, ch1Max) - Math.max(vfoMin, ch1Min))
+  const overlap2 = Math.max(0, Math.min(vfoMax, ch2Max) - Math.max(vfoMin, ch2Min))
+
+  if (overlap1 > 350000) {
+    const ratio = overlap1 / 1200000
+    const devKhz = (vfo.offsetHz - ch1Center) / 1000
+    return { locked: true, snr: ratio * 28.0, centerOffsetKhz: devKhz, isChannel1: true }
+  }
+
+  if (overlap2 > 350000) {
+    const ratio = overlap2 / 1200000
+    const devKhz = (vfo.offsetHz - ch2Center) / 1000
+    return { locked: true, snr: ratio * 24.0, centerOffsetKhz: devKhz, isChannel1: false }
+  }
+
+  // VFO moved to noise floor / no signal
+  return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
+}
+
+export const isVfoLockedOnSignal = computed(() => {
+  return checkVfoSignalLock().locked
 })
 
 let simTimer: number | null = null
@@ -126,31 +169,41 @@ function startEngine() {
 
   playDurationSec = 0
 
-  // If not looping, stop after ~6 seconds (simulated file length)
+  // Loop & Single-pass playback controller
   playbackProgressTimer = window.setInterval(() => {
     if (!isPlaying.value) return
     playDurationSec += 0.5
     if (!sourceConfig.loop && playDurationSec >= 6.0) {
-      // File finished, stop playing
+      // File reached end in single-pass mode -> automatically stop
       stopEngine()
       isPlaying.value = false
     }
   }, 500)
 
-  // Packet generation stream (simulated live bursts from 1.4MHz / -1.6MHz)
+  // Real-time Demodulation Stream Engine (Strictly gated by VFO overlap!)
   packetGenTimer = window.setInterval(() => {
     if (!isPlaying.value) return
+
+    // 1. Check if VFO passband is currently covering real RF energy
+    const lock = checkVfoSignalLock()
+    if (!lock.locked) {
+      // VFO is outside the signal band (e.g. at 0 Hz or -3.5 MHz) -> NO RF ENERGY -> ZERO FRAMES!
+      return
+    }
+
+    // 2. Decode frames with realistic signal parameters
     const now = new Date()
     const timeStr = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0')
-    const isValid = Math.random() > 0.05
+    
+    // Near center -> 98% CRC success; Edge of band -> bit error & CRC failure
+    const isValid = Math.random() < Math.min(0.98, lock.snr / 25.0)
     const id = ++totalPacketsCount.value
     if (isValid) validCrcCount.value++
 
     const isPairing = id % 25 === 0
-
     let payload = ''
     let ascii = ''
-    let sync = isPairing ? '54313253' : (Math.random() > 0.5 ? '1400701E' : '5BDEB350')
+    let sync = isPairing ? '54313253' : (lock.isChannel1 ? '1400701E' : '5BDEB350')
     let mask = isPairing ? '0x66' : '0x99'
 
     if (isPairing) {
@@ -164,14 +217,14 @@ function startEngine() {
     const packet: DecodedPacket = {
       id,
       timestamp: timeStr,
-      freqOffsetKhz: +(vfo.offsetHz / 1000 + (Math.random() * 10 - 5)).toFixed(1),
+      freqOffsetKhz: +(vfo.offsetHz / 1000 + lock.centerOffsetKhz + (Math.random() * 4 - 2)).toFixed(1),
       syncWord: '0x' + sync,
       mask,
       payloadHex: payload,
       payloadAscii: ascii,
       hwCrc: '0x' + Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0').toUpperCase(),
       crcValid: isValid,
-      score: +(7.0 + Math.random() * 8).toFixed(1),
+      score: +(Math.max(4.0, lock.snr / 2.0 + Math.random() * 4)).toFixed(1),
       length: isPairing ? 42 : 32
     }
 
