@@ -1,3 +1,4 @@
+#define NOMINMAX
 #include <imgui.h>
 #include <config.h>
 #include <core.h>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <memory>
 #include <chrono>
+#include <algorithm>
 
 #include "flrc_config.h"
 #include "flrc_dsp.h"
@@ -99,7 +101,8 @@ public:
 
     void enable() {
         double bw = gui::waterfall.getBandwidth();
-        vfo = sigpath::vfoManager.createVFO(name, ImGui::WaterfallVFO::REF_CENTER, std::clamp<double>(0, -bw / 2.0, bw / 2.0), 2000000, 8000000, 500000, 10000000, false);
+        double centerOffset = (0.0 < -bw / 2.0) ? -bw / 2.0 : ((0.0 > bw / 2.0) ? bw / 2.0 : 0.0);
+        vfo = sigpath::vfoManager.createVFO(name, ImGui::WaterfallVFO::REF_CENTER, centerOffset, 2000000, 8000000, 500000, 10000000, false);
         vfo->setSnapInterval(1000);
 
         dsp.setInput(vfo->output);
@@ -147,7 +150,7 @@ private:
     static void _diagHandler(float* data, int count, void* ctx) {
         FLRCDecoderModule* _this = (FLRCDecoderModule*)ctx;
         float* buf = _this->diag.acquireBuffer();
-        int copyCount = std::min(count, 1024);
+        int copyCount = (count < 1024) ? count : 1024;
         memcpy(buf, data, copyCount * sizeof(float));
         _this->diag.releaseBuffer();
     }
@@ -208,7 +211,8 @@ private:
         ImGui::LeftLabel("Bitrate (kbps)");
         ImGui::FillWidth();
         if (ImGui::InputFloat(("##symrate_" + name).c_str(), &symRateK, 10.0f, 100.0f, "%.1f")) {
-            demodCfg.symbolRate = std::max(1000.0, symRateK * 1000.0);
+            double rate = (double)symRateK * 1000.0;
+            demodCfg.symbolRate = (rate < 1000.0) ? 1000.0 : rate;
             dsp.setConfig(demodCfg);
             detector.setConfig(demodCfg, framingCfg);
         }
@@ -217,7 +221,8 @@ private:
         ImGui::LeftLabel("Deviation (kHz)");
         ImGui::FillWidth();
         if (ImGui::InputFloat(("##dev_" + name).c_str(), &devK, 5.0f, 25.0f, "%.1f")) {
-            demodCfg.deviation = std::max(1000.0, devK * 1000.0);
+            double dev = (double)devK * 1000.0;
+            demodCfg.deviation = (dev < 1000.0) ? 1000.0 : dev;
             dsp.setConfig(demodCfg);
             detector.setConfig(demodCfg, framingCfg);
         }
@@ -226,7 +231,8 @@ private:
         ImGui::LeftLabel("LPF Cutoff (kHz)");
         ImGui::FillWidth();
         if (ImGui::InputFloat(("##cutoff_" + name).c_str(), &cutoffK, 10.0f, 50.0f, "%.1f")) {
-            demodCfg.filterCutoff = std::max(1000.0, cutoffK * 1000.0);
+            double cut = (double)cutoffK * 1000.0;
+            demodCfg.filterCutoff = (cut < 1000.0) ? 1000.0 : cut;
             dsp.setConfig(demodCfg);
             detector.setConfig(demodCfg, framingCfg);
         }
@@ -245,7 +251,7 @@ private:
             detector.setConfig(demodCfg, framingCfg);
         }
 
-        float agcScore = demodCfg.agcScoreThreshold;
+        float agcScore = (float)demodCfg.agcScoreThreshold;
         ImGui::LeftLabel("AGC Threshold");
         ImGui::FillWidth();
         if (ImGui::SliderFloat(("##agcthresh_" + name).c_str(), &agcScore, 1.0f, 10.0f, "%.1f")) {
@@ -333,7 +339,8 @@ private:
 
             // Hex preview
             std::string preview;
-            for (size_t j = 0; j < std::min<size_t>(f.payload.size(), 16); j++) {
+            size_t limit = (f.payload.size() < 16) ? f.payload.size() : 16;
+            for (size_t j = 0; j < limit; j++) {
                 char buf[8];
                 snprintf(buf, sizeof(buf), "%02X ", f.payload[j]);
                 preview += buf;
