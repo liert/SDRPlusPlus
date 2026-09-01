@@ -34,10 +34,11 @@ namespace style {
             return false;
         }
 
-        // Create base font range
+        // Create base font range (Default Latin + Cyrillic)
         ImFontGlyphRangesBuilder baseBuilder;
         baseBuilder.AddRanges(fonts->GetGlyphRangesDefault());
         baseBuilder.AddRanges(fonts->GetGlyphRangesCyrillic());
+        baseBuilder.AddRanges(fonts->GetGlyphRangesChineseSimplifiedCommon());
         baseBuilder.BuildRanges(&baseRanges);
 
         // Create big font range
@@ -54,9 +55,9 @@ namespace style {
         
         // 1. Add base Western font
         std::string robotoPath = resDir + "/fonts/Roboto-Medium.ttf";
-        baseFont = fonts->AddFontFromFileTTF(robotoPath.c_str(), 16.0f * uiScale, NULL, baseRanges.Data);
+        baseFont = fonts->AddFontFromFileTTF(robotoPath.c_str(), 16.0f * uiScale, NULL, fonts->GetGlyphRangesDefault());
 
-        // 2. Merge Chinese / CJK Font into baseFont so Chinese characters display perfectly
+        // 2. Merge Chinese / CJK Font into baseFont using Common Simplified Chinese (lightweight and safe)
         ImFontConfig mergeConfig;
         mergeConfig.MergeMode = true;
         mergeConfig.PixelSnapH = true;
@@ -73,8 +74,8 @@ namespace style {
         for (const char* cjkPath : cjkCandidates) {
             try {
                 if (std::filesystem::is_regular_file(toFsPath(cjkPath))) {
-                    fonts->AddFontFromFileTTF(cjkPath, 16.0f * uiScale, &mergeConfig, fonts->GetGlyphRangesChineseFull());
-                    flog::info("Successfully loaded CJK font for Chinese language: {0}", cjkPath);
+                    fonts->AddFontFromFileTTF(cjkPath, 16.0f * uiScale, &mergeConfig, fonts->GetGlyphRangesChineseSimplifiedCommon());
+                    flog::info("Loaded CJK font: {0}", cjkPath);
                     break;
                 }
             } catch (...) {}
