@@ -4,6 +4,7 @@
 #include <fstream>
 #include <string>
 #include <algorithm>
+#include <filesystem>
 
 #define WAV_SIGNATURE       "RIFF"
 #define WAV_TYPE            "WAVE"
@@ -23,7 +24,11 @@ class WavReader {
 public:
     WavReader(std::string path, uint32_t fallbackSampleRate = 8000000) {
         _sampleRate = fallbackSampleRate;
-        file = std::ifstream(path.c_str(), std::ios::binary);
+#if defined(_WIN32)
+        file.open(std::filesystem::u8path(path), std::ios::binary);
+#else
+        file.open(path.c_str(), std::ios::binary);
+#endif
         if (!file.is_open()) {
             valid = false;
             return;

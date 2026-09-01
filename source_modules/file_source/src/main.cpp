@@ -17,6 +17,14 @@
 
 #define CONCAT(a, b) ((std::string(a) + b).c_str())
 
+static inline std::filesystem::path toFsPath(const std::string& utf8Str) {
+#if defined(_WIN32)
+    return std::filesystem::u8path(utf8Str);
+#else
+    return std::filesystem::path(utf8Str);
+#endif
+}
+
 SDRPP_MOD_INFO{
     /* Name:            */ "file_source",
     /* Description:     */ "Universal WAV and Raw IQ file source module for SDR++",
@@ -29,14 +37,23 @@ ConfigManager config;
 
 class FileSourceModule : public ModuleManager::Instance {
 public:
-    FileSourceModule(std::string name) : fileSelect("", { "IQ & WAV Files (*.wav;*.iq;*.bin;*.raw)", "*.wav;*.iq;*.bin;*.raw", "All Files", "*" }) {
+    FileSourceModule(std::string name) : fileSelect("", { "IQ & WAV Files", "*.wav *.iq *.bin *.raw", "All Files", "*" }) {
         this->name = name;
 
         if (core::args["server"].b()) { return; }
 
         config.acquire();
-        fileSelect.setPath(config.conf["path"], true);
+        std::string savedPath = config.conf.contains("path") ? (std::string)config.conf["path"] : "";
+        fileSelect.setPath(savedPath, true);
         config.release();
+
+        if (!savedPath.empty()) {
+            try {
+                if (std::filesystem::is_regular_file(toFsPath(savedPath))) {
+                    loadFile(savedPath);
+                }
+            } catch (...) {}
+        }
 
         handler.ctx = this;
         handler.selectHandler = menuSelected;
@@ -68,6 +85,41 @@ public:
         return enabled;
     }
 
+    void loadFile(const std::string& path) {
+        if (reader != NULL) {
+            reader->close();
+            delete reader;
+            reader = NULL;
+        }
+        try {
+            reader = new WavReader(path, (uint32_t)sampleRate);
+            if (!reader->isValid()) {
+                delete reader;
+                reader = NULL;
+                flog::error("Failed to open file: {}", path);
+                return;
+            }
+            if (reader->isWavFile()) {
+                sampleRate = reader->getSampleRate();
+                formatType = FORMAT_WAV;
+            } else {
+                std::string ext = toFsPath(path).extension().string();
+                if (ext == ".iq" || ext == ".raw") {
+                    formatType = FORMAT_RAW_INT8;
+                }
+            }
+            core::setInputSampleRate(sampleRate);
+            std::string filename = toFsPath(path).filename().string();
+            centerFreq = getFrequency(filename);
+            tuner::tune(tuner::TUNER_MODE_IQ_ONLY, "", centerFreq);
+            currentFilePath = path;
+            flog::info("FileSource loaded: {} at SR: {} Hz, Freq: {} Hz", path, sampleRate, centerFreq);
+        }
+        catch (const std::exception& e) {
+            flog::error("Error loading file: {}", e.what());
+        }
+    }
+
 private:
     static void menuSelected(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
@@ -88,7 +140,10 @@ private:
     static void start(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
         if (_this->running) { return; }
-        if (_this->reader == NULL) { return; }
+        if (_this->reader == NULL) {
+            flog::warn("FileSource: Cannot start, no file loaded!");
+            return;
+        }
         _this->running = true;
         _this->workerThread = std::thread(worker, _this);
         flog::info("FileSourceModule '{0}': Start!", _this->name);
@@ -116,42 +171,20 @@ private:
     static void menuHandler(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
 
+        ImGui::Text("File Selection:");
         if (_this->fileSelect.render("##file_source_" + _this->name)) {
-            if (_this->fileSelect.pathIsValid()) {
-                if (_this->reader != NULL) {
-                    _this->reader->close();
-                    delete _this->reader;
-                    _this->reader = NULL;
-                }
-                try {
-                    _this->reader = new WavReader(_this->fileSelect.path, (uint32_t)_this->sampleRate);
-                    if (!_this->reader->isValid()) {
-                        delete _this->reader;
-                        _this->reader = NULL;
-                        throw std::runtime_error("Failed to open file");
-                    }
-                    if (_this->reader->isWavFile()) {
-                        _this->sampleRate = _this->reader->getSampleRate();
-                        _this->formatType = FORMAT_WAV;
-                    } else {
-                        // Check extension: if .iq, default to Raw Int8 (HackRF)
-                        std::string ext = std::filesystem::path(_this->fileSelect.path).extension().string();
-                        if (ext == ".iq" || ext == ".raw") {
-                            _this->formatType = FORMAT_RAW_INT8;
-                        }
-                    }
-                    core::setInputSampleRate(_this->sampleRate);
-                    std::string filename = std::filesystem::path(_this->fileSelect.path).filename().string();
-                    _this->centerFreq = _this->getFrequency(filename);
-                    tuner::tune(tuner::TUNER_MODE_IQ_ONLY, "", _this->centerFreq);
-                }
-                catch (const std::exception& e) {
-                    flog::error("Error: {}", e.what());
-                }
-                config.acquire();
-                config.conf["path"] = _this->fileSelect.path;
-                config.release(true);
-            }
+            _this->loadFile(_this->fileSelect.path);
+            config.acquire();
+            config.conf["path"] = _this->fileSelect.path;
+            config.release(true);
+        }
+
+        // Status indicator
+        if (_this->reader != NULL && _this->reader->isValid()) {
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Status: Ready (%s)",
+                               _this->running ? "Playing" : "Stopped");
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Status: No valid file selected");
         }
 
         ImGui::Spacing();
@@ -226,6 +259,7 @@ private:
 
     double centerFreq = 2400000000.0;
     FileFormatType formatType = FORMAT_RAW_INT8;
+    std::string currentFilePath = "";
 };
 
 MOD_EXPORT void _INIT_() {

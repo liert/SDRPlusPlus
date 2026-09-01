@@ -4,6 +4,14 @@
 #include <gui/file_dialogs.h>
 #include <core.h>
 
+static inline std::filesystem::path toFsPath(const std::string& utf8Str) {
+#if defined(_WIN32)
+    return std::filesystem::u8path(utf8Str);
+#else
+    return std::filesystem::path(utf8Str);
+#endif
+}
+
 FileSelect::FileSelect(std::string defaultPath, std::vector<std::string> filter) {
     _filter = filter;
     root = (std::string)core::args["root"];
@@ -17,18 +25,19 @@ bool FileSelect::render(std::string id) {
     float buttonWidth = ImGui::CalcTextSize("...").x + 20.0f;
     bool lastPathValid = pathValid;
     if (!lastPathValid) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
     }
     ImGui::SetNextItemWidth(menuColumnWidth - buttonWidth);
     if (ImGui::InputText(id.c_str(), strPath, 2047)) {
         path = std::string(strPath);
         std::string expandedPath = expandString(strPath);
-        if (!std::filesystem::is_regular_file(expandedPath)) {
+        try {
+            pathValid = std::filesystem::is_regular_file(toFsPath(expandedPath));
+            if (pathValid) {
+                _pathChanged = true;
+            }
+        } catch (...) {
             pathValid = false;
-        }
-        else {
-            pathValid = true;
-            _pathChanged = true;
         }
     }
     if (!lastPathValid) {
@@ -49,7 +58,11 @@ bool FileSelect::render(std::string id) {
 void FileSelect::setPath(std::string path, bool markChanged) {
     this->path = path;
     std::string expandedPath = expandString(path);
-    pathValid = std::filesystem::is_regular_file(expandedPath);
+    try {
+        pathValid = std::filesystem::is_regular_file(toFsPath(expandedPath));
+    } catch (...) {
+        pathValid = false;
+    }
     if (markChanged) { pathChanged = true; }
     strcpy(strPath, path.c_str());
 }
@@ -64,15 +77,26 @@ bool FileSelect::pathIsValid() {
 }
 
 void FileSelect::worker() {
-    auto file = pfd::open_file("Open File", pathValid ? std::filesystem::path(expandString(path)).parent_path().string() : "", _filter);
+    std::string initialDir = "";
+    try {
+        if (pathValid) {
+            initialDir = toFsPath(expandString(path)).parent_path().string();
+        }
+    } catch (...) {}
+
+    auto file = pfd::open_file("Open File", initialDir, _filter);
     std::vector<std::string> res = file.result();
 
     if (res.size() > 0) {
         path = res[0];
         strcpy(strPath, path.c_str());
+        try {
+            pathValid = std::filesystem::is_regular_file(toFsPath(expandString(path)));
+        } catch (...) {
+            pathValid = false;
+        }
         pathChanged = true;
     }
 
-    pathValid = std::filesystem::is_regular_file(expandString(path));
     dialogOpen = false;
 }
