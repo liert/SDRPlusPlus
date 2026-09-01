@@ -78,6 +78,8 @@ export const crcSuccessRate = computed(() => {
 
 let simTimer: number | null = null
 let packetGenTimer: number | null = null
+let playbackProgressTimer: number | null = null
+let playDurationSec = 0
 
 export function togglePlay() {
   isPlaying.value = !isPlaying.value
@@ -120,6 +122,20 @@ export function applyPreset(presetName: string) {
 function startEngine() {
   if (simTimer) clearInterval(simTimer)
   if (packetGenTimer) clearInterval(packetGenTimer)
+  if (playbackProgressTimer) clearInterval(playbackProgressTimer)
+
+  playDurationSec = 0
+
+  // If not looping, stop after ~6 seconds (simulated file length)
+  playbackProgressTimer = window.setInterval(() => {
+    if (!isPlaying.value) return
+    playDurationSec += 0.5
+    if (!sourceConfig.loop && playDurationSec >= 6.0) {
+      // File finished, stop playing
+      stopEngine()
+      isPlaying.value = false
+    }
+  }, 500)
 
   // Packet generation stream (simulated live bursts from 1.4MHz / -1.6MHz)
   packetGenTimer = window.setInterval(() => {
@@ -130,7 +146,6 @@ function startEngine() {
     const id = ++totalPacketsCount.value
     if (isValid) validCrcCount.value++
 
-    const hop = Math.floor(Math.random() * 15)
     const isPairing = id % 25 === 0
 
     let payload = ''
@@ -170,4 +185,5 @@ function startEngine() {
 function stopEngine() {
   if (simTimer) { clearInterval(simTimer); simTimer = null }
   if (packetGenTimer) { clearInterval(packetGenTimer); packetGenTimer = null }
+  if (playbackProgressTimer) { clearInterval(playbackProgressTimer); playbackProgressTimer = null }
 }

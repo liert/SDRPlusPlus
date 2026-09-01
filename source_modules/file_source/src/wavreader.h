@@ -75,24 +75,32 @@ public:
         return isWav ? hdr.channelCount : 2;
     }
 
-    void readSamples(void* data, size_t size) {
-        if (!file.is_open()) return;
+    size_t readSamples(void* data, size_t size, bool loop = true) {
+        if (!file.is_open()) return 0;
         char* _data = (char*)data;
         file.read(_data, size);
-        size_t read = file.gcount();
+        size_t read = (size_t)file.gcount();
         if (read < size) {
-            // Loop playback from beginning of data
-            file.clear();
-            file.seekg(dataOffset, std::ios::beg);
-            file.read(&_data[read], size - read);
+            if (loop) {
+                // Loop playback from beginning of data
+                file.clear();
+                file.seekg(dataOffset, std::ios::beg);
+                file.read(&_data[read], size - read);
+                read += (size_t)file.gcount();
+            } else {
+                // Not looping: fill remainder with zero
+                memset(&_data[read], 0, size - read);
+            }
         }
-        bytesRead += size;
+        bytesRead += read;
+        return read;
     }
 
     void rewind() {
         if (!file.is_open()) return;
         file.clear();
         file.seekg(dataOffset, std::ios::beg);
+        bytesRead = 0;
     }
 
     void close() {

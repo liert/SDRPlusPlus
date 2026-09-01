@@ -4,6 +4,7 @@
 #include <module.h>
 #include <gui/gui.h>
 #include <gui/style.h>
+#include <gui/file_dialogs.h>
 #include <signal_path/signal_path.h>
 #include <wavreader.h>
 #include <core.h>
@@ -44,6 +45,7 @@ public:
 
         config.acquire();
         std::string savedPath = config.conf.contains("path") ? (std::string)config.conf["path"] : "";
+        loopMode = config.conf.contains("loop") ? (bool)config.conf["loop"] : true;
         fileSelect.setPath(savedPath, true);
         config.release();
 
@@ -113,10 +115,30 @@ public:
             centerFreq = getFrequency(filename);
             tuner::tune(tuner::TUNER_MODE_IQ_ONLY, "", centerFreq);
             currentFilePath = path;
+            fileSelect.setPath(path, false);
             flog::info("FileSource loaded: {} at SR: {} Hz, Freq: {} Hz", path, sampleRate, centerFreq);
         }
         catch (const std::exception& e) {
             flog::error("Error loading file: {}", e.what());
+        }
+    }
+
+    void openFileDialog() {
+        std::string initialDir = "";
+        try {
+            if (!currentFilePath.empty()) {
+                initialDir = toFsPath(currentFilePath).parent_path().string();
+            }
+        } catch (...) {}
+
+        auto file = pfd::open_file("Open IQ or WAV File", initialDir, { "IQ & WAV Files", "*.wav *.iq *.bin *.raw", "All Files", "*" });
+        std::vector<std::string> res = file.result();
+        if (!res.empty() && !res[0].empty()) {
+            loadFile(res[0]);
+            config.acquire();
+            config.conf["path"] = res[0];
+            config.conf["loop"] = loopMode;
+            config.release(true);
         }
     }
 
@@ -171,30 +193,43 @@ private:
     static void menuHandler(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
 
-        ImGui::Text("File Selection:");
+        // Big Browse File Button
+        if (ImGui::Button("📂 浏览选择文件 (Browse File)...", ImVec2(-1, 26))) {
+            _this->openFileDialog();
+        }
+
+        // File Path Text Input
         if (_this->fileSelect.render("##file_source_" + _this->name)) {
             _this->loadFile(_this->fileSelect.path);
             config.acquire();
             config.conf["path"] = _this->fileSelect.path;
+            config.conf["loop"] = _this->loopMode;
             config.release(true);
         }
 
         // Status indicator
         if (_this->reader != NULL && _this->reader->isValid()) {
-            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Status: Ready (%s)",
-                               _this->running ? "Playing" : "Stopped");
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "状态: 就绪 (%s)",
+                               _this->running ? "正在播放" : "已停止");
         } else {
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Status: No valid file selected");
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "状态: 请点击上方按钮选择文件");
         }
 
         ImGui::Spacing();
-        const char* formatNames[] = { "Auto (WAV)", "WAV (RIFF)", "Raw Int8 (HackRF)", "Raw Int16 (16-bit PCM)", "Raw Float32" };
-        ImGui::LeftLabel("Format");
+        if (ImGui::Checkbox("循环回放 (Loop Playback)", &_this->loopMode)) {
+            config.acquire();
+            config.conf["loop"] = _this->loopMode;
+            config.release(true);
+        }
+
+        ImGui::Spacing();
+        const char* formatNames[] = { "自动 (Auto/WAV)", "标准 WAV (RIFF)", "Raw Int8 (HackRF 8位)", "Raw Int16 (16位PCM)", "Raw Float32" };
+        ImGui::LeftLabel("数据编码");
         ImGui::FillWidth();
         ImGui::Combo("##file_format", (int*)&_this->formatType, formatNames, IM_ARRAYSIZE(formatNames));
 
         float srM = (float)(_this->sampleRate / 1000000.0);
-        ImGui::LeftLabel("Sample Rate (MSPS)");
+        ImGui::LeftLabel("采样率 (MSPS)");
         ImGui::FillWidth();
         if (ImGui::InputFloat("##file_sr", &srM, 1.0f, 2.0f, "%.3f")) {
             if (srM > 0.001f) {
@@ -213,7 +248,7 @@ private:
         if (_this->formatType == FORMAT_RAW_INT8) {
             std::vector<int8_t> inBuf(blockSize * 2);
             while (_this->running) {
-                _this->reader->readSamples(inBuf.data(), blockSize * 2 * sizeof(int8_t));
+                size_t read = _this->reader->readSamples(inBuf.data(), blockSize * 2 * sizeof(int8_t), _this->loopMode);
                 for (int i = 0; i < blockSize; i++) {
                     _this->stream.writeBuf[i] = dsp::complex_t{
                         (float)inBuf[2 * i] / 128.0f,
@@ -221,19 +256,31 @@ private:
                     };
                 }
                 if (!_this->stream.swap(blockSize)) { break; }
+                if (!_this->loopMode && read < blockSize * 2 * sizeof(int8_t)) {
+                    _this->running = false;
+                    break;
+                }
             }
         } else if (_this->formatType == FORMAT_RAW_FLOAT32) {
             while (_this->running) {
-                _this->reader->readSamples(_this->stream.writeBuf, blockSize * sizeof(dsp::complex_t));
+                size_t read = _this->reader->readSamples(_this->stream.writeBuf, blockSize * sizeof(dsp::complex_t), _this->loopMode);
                 if (!_this->stream.swap(blockSize)) { break; }
+                if (!_this->loopMode && read < blockSize * sizeof(dsp::complex_t)) {
+                    _this->running = false;
+                    break;
+                }
             }
         } else {
             // Standard 16-bit WAV / Int16
             std::vector<int16_t> inBuf(blockSize * 2);
             while (_this->running) {
-                _this->reader->readSamples(inBuf.data(), blockSize * 2 * sizeof(int16_t));
+                size_t read = _this->reader->readSamples(inBuf.data(), blockSize * 2 * sizeof(int16_t), _this->loopMode);
                 volk_16i_s32f_convert_32f((float*)_this->stream.writeBuf, inBuf.data(), 32768.0f, blockSize * 2);
                 if (!_this->stream.swap(blockSize)) { break; }
+                if (!_this->loopMode && read < blockSize * 2 * sizeof(int16_t)) {
+                    _this->running = false;
+                    break;
+                }
             }
         }
     }
@@ -260,11 +307,13 @@ private:
     double centerFreq = 2400000000.0;
     FileFormatType formatType = FORMAT_RAW_INT8;
     std::string currentFilePath = "";
+    bool loopMode = true;
 };
 
 MOD_EXPORT void _INIT_() {
     json def = json({});
     def["path"] = "";
+    def["loop"] = true;
     config.setPath(core::args["root"].s() + "/file_source_config.json");
     config.load(def);
     config.enableAutoSave();
