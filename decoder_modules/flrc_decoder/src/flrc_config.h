@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "i18n.h"
 
 namespace flrc {
 
@@ -21,9 +22,9 @@ enum class MaskMode {
 };
 
 enum class ProtocolType {
-    RAW_BITS,      // Raw bitstream & hex dump
+    H12_DRONE_RC,  // H12 / T12 Drone Telemetry & RC Channels
     FLRC_GENERIC,  // Generic SX1280 FLRC Packet
-    H12_DRONE_RC   // H12 / T12 Drone Telemetry & RC Channels
+    RAW_BITS       // Raw bitstream & hex dump
 };
 
 struct DemodConfig {
@@ -33,7 +34,7 @@ struct DemodConfig {
     double filterCutoff = 750000.0;   // Lowpass filter cutoff (Hz)
     int filterTaps = 129;             // FIR filter taps
     double energyThreshold = 0.005;   // Burst / Squelch threshold
-    double agcScoreThreshold = 3.5;   // Preamble correlation score threshold
+    double agcScoreThreshold = 3.0;   // Preamble correlation score threshold
     bool enableBurstDetection = true; // Use energy burst gating
 };
 
@@ -41,7 +42,8 @@ struct FramingConfig {
     bool enableAgcPreamble = true;      // Check 32-bit 0101... AGC preamble
     int agcPreambleBits = 32;
     bool enableTimingPreamble = true;   // Check 21-bit timing preamble (0x043EE2)
-    int timingToleranceBits = 2;        // Max bit errors allowed in timing preamble
+    int timingToleranceBits = 3;        // Max bit errors allowed in timing preamble (3 bits)
+    bool autoSyncWord = true;           // Auto capture any valid sync word (Recommended)
     uint32_t syncWord = 0x54313253;     // Default sync word (e.g. 'T12S' = 0x54313253)
     bool syncWordMasked = true;         // Sync word is masked on air (SX1280 standard)
     bool differentialDecode = true;     // CumXOR differential decoding
@@ -60,6 +62,8 @@ inline void applyPreset(PresetType preset, DemodConfig& demod, FramingConfig& fr
         demod.filterCutoff = 750000.0;
         framing.enableAgcPreamble = true;
         framing.enableTimingPreamble = true;
+        framing.timingToleranceBits = 3;
+        framing.autoSyncWord = true;
         framing.syncWord = 0x54313253;
         framing.differentialDecode = true;
         framing.maskMode = MaskMode::AUTO_66_99;
@@ -72,6 +76,8 @@ inline void applyPreset(PresetType preset, DemodConfig& demod, FramingConfig& fr
         demod.filterCutoff = 300000.0;
         framing.enableAgcPreamble = true;
         framing.enableTimingPreamble = true;
+        framing.timingToleranceBits = 3;
+        framing.autoSyncWord = true;
         framing.syncWord = 0x54313253;
         framing.differentialDecode = true;
         framing.maskMode = MaskMode::AUTO_66_99;
@@ -84,6 +90,8 @@ inline void applyPreset(PresetType preset, DemodConfig& demod, FramingConfig& fr
         demod.filterCutoff = 150000.0;
         framing.enableAgcPreamble = true;
         framing.enableTimingPreamble = true;
+        framing.timingToleranceBits = 3;
+        framing.autoSyncWord = true;
         framing.syncWord = 0x54313253;
         framing.differentialDecode = true;
         framing.maskMode = MaskMode::AUTO_66_99;
@@ -91,7 +99,6 @@ inline void applyPreset(PresetType preset, DemodConfig& demod, FramingConfig& fr
         framing.defaultPayloadLen = 32;
         break;
     case PresetType::GENERIC_2FSK_CUSTOM:
-        // Keep current custom settings
         break;
     }
 }

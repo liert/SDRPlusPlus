@@ -17,6 +17,7 @@
 #include <chrono>
 #include <algorithm>
 
+#include "i18n.h"
 #include "flrc_config.h"
 #include "flrc_dsp.h"
 #include "frame_detector.h"
@@ -44,6 +45,10 @@ public:
     FLRCDecoderModule(std::string name) : diag(0.6, 1024) {
         this->name = name;
 
+        // Init language options
+        languages.define(0, "简体中文 (Simplified Chinese)", Language::ZH_CN);
+        languages.define(1, "English", Language::EN_US);
+
         // Init option lists
         presets.define(0, "SX1280 FLRC (1.3 Mbps, H12)", PresetType::SX1280_FLRC_1300K);
         presets.define(1, "SX1280 FLRC (520 kbps)", PresetType::SX1280_FLRC_520K);
@@ -51,8 +56,8 @@ public:
         presets.define(3, "Custom Generic 2FSK", PresetType::GENERIC_2FSK_CUSTOM);
 
         maskModes.define(0, "Auto (0x66 / 0x99)", MaskMode::AUTO_66_99);
-        maskModes.define(1, "Fixed 0x66", MaskMode::FIXED_66);
-        maskModes.define(2, "Fixed 0x99", MaskMode::FIXED_99);
+        maskModes.define(1, "Fixed 0x99 (Transmitter)", MaskMode::FIXED_99);
+        maskModes.define(2, "Fixed 0x66 (Receiver)", MaskMode::FIXED_66);
         maskModes.define(3, "None (0x00)", MaskMode::NONE_00);
         maskModes.define(4, "Custom", MaskMode::CUSTOM);
 
@@ -157,33 +162,42 @@ private:
 
     static void menuHandler(void* ctx) {
         FLRCDecoderModule* _this = (FLRCDecoderModule*)ctx;
-        float menuWidth = ImGui::GetContentRegionAvail().x;
+        const auto& txt = getText(_this->currentLang);
 
         if (!_this->enabled) { style::beginDisabled(); }
+
+        // Language Selector
+        ImGui::LeftLabel(txt.languageSelect);
+        ImGui::FillWidth();
+        if (ImGui::Combo(("##flrc_lang_" + _this->name).c_str(), &_this->selectedLangId, _this->languages.txt)) {
+            _this->currentLang = _this->languages.value(_this->selectedLangId);
+        }
+
+        ImGui::Spacing();
 
         // Structured TabBar UI Layout
         if (ImGui::BeginTabBar(("flrc_tabs_" + _this->name).c_str())) {
             
             // Tab 1: Demodulation & Physical Layer
-            if (ImGui::BeginTabItem(("Demod##" + _this->name).c_str())) {
+            if (ImGui::BeginTabItem((std::string(txt.tabDemod) + "##" + _this->name).c_str())) {
                 _this->renderDemodTab();
                 ImGui::EndTabItem();
             }
 
             // Tab 2: Framing & Sync
-            if (ImGui::BeginTabItem(("Framing##" + _this->name).c_str())) {
+            if (ImGui::BeginTabItem((std::string(txt.tabFraming) + "##" + _this->name).c_str())) {
                 _this->renderFramingTab();
                 ImGui::EndTabItem();
             }
 
             // Tab 3: Protocol Inspector
-            if (ImGui::BeginTabItem(("Protocol##" + _this->name).c_str())) {
+            if (ImGui::BeginTabItem((std::string(txt.tabProtocol) + "##" + _this->name).c_str())) {
                 _this->renderProtocolTab();
                 ImGui::EndTabItem();
             }
 
             // Tab 4: Frame Log & Stats
-            if (ImGui::BeginTabItem(("Log & Stats##" + _this->name).c_str())) {
+            if (ImGui::BeginTabItem((std::string(txt.tabLog) + "##" + _this->name).c_str())) {
                 _this->renderLogTab();
                 ImGui::EndTabItem();
             }
@@ -195,8 +209,9 @@ private:
     }
 
     void renderDemodTab() {
+        const auto& txt = getText(currentLang);
         ImGui::Spacing();
-        ImGui::LeftLabel("Preset");
+        ImGui::LeftLabel(txt.presetLabel);
         ImGui::FillWidth();
         if (ImGui::Combo(("##preset_" + name).c_str(), &selectedPresetId, presets.txt)) {
             applyPreset(presets.value(selectedPresetId), demodCfg, framingCfg);
@@ -205,10 +220,10 @@ private:
         }
 
         ImGui::Separator();
-        ImGui::Text("Physical Layer Parameters:");
+        ImGui::Text("%s", txt.phyHeader);
 
         float symRateK = (float)(demodCfg.symbolRate / 1000.0);
-        ImGui::LeftLabel("Bitrate (kbps)");
+        ImGui::LeftLabel(txt.bitrate);
         ImGui::FillWidth();
         if (ImGui::InputFloat(("##symrate_" + name).c_str(), &symRateK, 10.0f, 100.0f, "%.1f")) {
             double rate = (double)symRateK * 1000.0;
@@ -218,7 +233,7 @@ private:
         }
 
         float devK = (float)(demodCfg.deviation / 1000.0);
-        ImGui::LeftLabel("Deviation (kHz)");
+        ImGui::LeftLabel(txt.deviation);
         ImGui::FillWidth();
         if (ImGui::InputFloat(("##dev_" + name).c_str(), &devK, 5.0f, 25.0f, "%.1f")) {
             double dev = (double)devK * 1000.0;
@@ -228,7 +243,7 @@ private:
         }
 
         float cutoffK = (float)(demodCfg.filterCutoff / 1000.0);
-        ImGui::LeftLabel("LPF Cutoff (kHz)");
+        ImGui::LeftLabel(txt.lpfCutoff);
         ImGui::FillWidth();
         if (ImGui::InputFloat(("##cutoff_" + name).c_str(), &cutoffK, 10.0f, 50.0f, "%.1f")) {
             double cut = (double)cutoffK * 1000.0;
@@ -238,68 +253,76 @@ private:
         }
 
         ImGui::Spacing();
-        ImGui::Text("Instantaneous Frequency / Eye Diagram:");
+        ImGui::Text("%s", txt.eyeDiagram);
         ImGui::FillWidth();
         diag.draw();
     }
 
     void renderFramingTab() {
+        const auto& txt = getText(currentLang);
         ImGui::Spacing();
-        ImGui::Text("Preamble & Sync Settings:");
+        ImGui::Text("%s", txt.preambleHeader);
 
-        if (ImGui::Checkbox(("AGC Preamble (32-bit 0101..)##" + name).c_str(), &framingCfg.enableAgcPreamble)) {
+        if (ImGui::Checkbox((std::string(txt.agcPreamble) + "##" + name).c_str(), &framingCfg.enableAgcPreamble)) {
             detector.setConfig(demodCfg, framingCfg);
         }
 
         float agcScore = (float)demodCfg.agcScoreThreshold;
-        ImGui::LeftLabel("AGC Threshold");
+        ImGui::LeftLabel(txt.agcThreshold);
         ImGui::FillWidth();
         if (ImGui::SliderFloat(("##agcthresh_" + name).c_str(), &agcScore, 1.0f, 10.0f, "%.1f")) {
             demodCfg.agcScoreThreshold = agcScore;
             detector.setConfig(demodCfg, framingCfg);
         }
 
-        if (ImGui::Checkbox(("Timing Preamble (21-bit)##" + name).c_str(), &framingCfg.enableTimingPreamble)) {
+        if (ImGui::Checkbox((std::string(txt.timingPreamble) + "##" + name).c_str(), &framingCfg.enableTimingPreamble)) {
             detector.setConfig(demodCfg, framingCfg);
         }
 
-        ImGui::LeftLabel("Timing Tolerance (bits)");
+        ImGui::LeftLabel(txt.timingTolerance);
         ImGui::FillWidth();
         if (ImGui::SliderInt(("##timetol_" + name).c_str(), &framingCfg.timingToleranceBits, 0, 5)) {
             detector.setConfig(demodCfg, framingCfg);
         }
 
         ImGui::Separator();
-        ImGui::Text("Sync Word & Masking:");
+        ImGui::Text("%s", txt.syncHeader);
 
-        char syncHexBuf[16];
-        snprintf(syncHexBuf, sizeof(syncHexBuf), "%08X", framingCfg.syncWord);
-        ImGui::LeftLabel("Sync Word (Hex)");
-        ImGui::FillWidth();
-        if (ImGui::InputText(("##syncword_" + name).c_str(), syncHexBuf, sizeof(syncHexBuf), ImGuiInputTextFlags_CharsHexadecimal)) {
-            framingCfg.syncWord = (uint32_t)strtoul(syncHexBuf, nullptr, 16);
+        if (ImGui::Checkbox((std::string(txt.autoSync) + "##" + name).c_str(), &framingCfg.autoSyncWord)) {
             detector.setConfig(demodCfg, framingCfg);
         }
 
-        ImGui::LeftLabel("Mask Mode");
+        if (!framingCfg.autoSyncWord) {
+            char syncHexBuf[16];
+            snprintf(syncHexBuf, sizeof(syncHexBuf), "%08X", framingCfg.syncWord);
+            ImGui::LeftLabel(txt.syncWord);
+            ImGui::FillWidth();
+            if (ImGui::InputText(("##syncword_" + name).c_str(), syncHexBuf, sizeof(syncHexBuf), ImGuiInputTextFlags_CharsHexadecimal)) {
+                framingCfg.syncWord = (uint32_t)strtoul(syncHexBuf, nullptr, 16);
+                detector.setConfig(demodCfg, framingCfg);
+            }
+        }
+
+        ImGui::LeftLabel(txt.maskMode);
         ImGui::FillWidth();
         if (ImGui::Combo(("##maskmode_" + name).c_str(), &selectedMaskId, maskModes.txt)) {
             framingCfg.maskMode = maskModes.value(selectedMaskId);
             detector.setConfig(demodCfg, framingCfg);
         }
 
-        if (ImGui::Checkbox(("Differential CumXOR Decode##" + name).c_str(), &framingCfg.differentialDecode)) {
+        if (ImGui::Checkbox((std::string(txt.diffDecode) + "##" + name).c_str(), &framingCfg.differentialDecode)) {
             detector.setConfig(demodCfg, framingCfg);
         }
 
-        if (ImGui::Checkbox(("Hardware CRC-32 Verification##" + name).c_str(), &framingCfg.enableHwCrc)) {
+        if (ImGui::Checkbox((std::string(txt.hwCrc) + "##" + name).c_str(), &framingCfg.enableHwCrc)) {
             detector.setConfig(demodCfg, framingCfg);
         }
     }
 
     void renderProtocolTab() {
+        const auto& txt = getText(currentLang);
         ImGui::Spacing();
-        ImGui::LeftLabel("Protocol Parser");
+        ImGui::LeftLabel(txt.protoParser);
         ImGui::FillWidth();
         ImGui::Combo(("##protocol_" + name).c_str(), &selectedProtoId, protocols.txt);
 
@@ -310,10 +333,11 @@ private:
     }
 
     void renderLogTab() {
+        const auto& txt = getText(currentLang);
         ImGui::Spacing();
-        ImGui::Text("Statistics: Total: %llu | CRC OK: %llu", (unsigned long long)totalFrameCount, (unsigned long long)validFrameCount);
+        ImGui::Text(txt.statsSummary, (unsigned long long)totalFrameCount, (unsigned long long)validFrameCount);
         ImGui::SameLine();
-        if (ImGui::Button(("Clear Log##" + name).c_str())) {
+        if (ImGui::Button((std::string(txt.clearLog) + "##" + name).c_str())) {
             std::lock_guard<std::mutex> lck(frameMtx);
             frameHistory.clear();
             totalFrameCount = 0;
@@ -322,11 +346,11 @@ private:
         }
 
         ImGui::Separator();
-        ImGui::Text("Recent Frames (Last %zu):", frameHistory.size());
+        ImGui::Text(txt.recentFrames, frameHistory.size());
 
         std::lock_guard<std::mutex> lck(frameMtx);
         if (frameHistory.empty()) {
-            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No frames captured yet.");
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", txt.noFrames);
             return;
         }
 
@@ -353,6 +377,11 @@ private:
 
     std::string name;
     bool enabled = true;
+
+    // Language
+    Language currentLang = Language::ZH_CN;
+    int selectedLangId = 0;
+    OptionList<int, Language> languages;
 
     // Configs
     DemodConfig demodCfg;

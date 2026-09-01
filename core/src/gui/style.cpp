@@ -5,6 +5,14 @@
 #include <utils/flog.h>
 #include <filesystem>
 
+static inline std::filesystem::path toFsPath(const std::string& utf8Str) {
+#if defined(_WIN32)
+    return std::filesystem::u8path(utf8Str);
+#else
+    return std::filesystem::path(utf8Str);
+#endif
+}
+
 namespace style {
     ImFont* baseFont;
     ImFont* bigFont;
@@ -21,7 +29,7 @@ namespace style {
 
     bool loadFonts(std::string resDir) {
         ImFontAtlas* fonts = ImGui::GetIO().Fonts;
-        if (!std::filesystem::is_directory(resDir)) {
+        if (!std::filesystem::is_directory(toFsPath(resDir))) {
             flog::error("Invalid resource directory: {0}", resDir);
             return false;
         }
@@ -44,10 +52,37 @@ namespace style {
         hugeBuilder.AddRanges(hugeRange);
         hugeBuilder.BuildRanges(&hugeRanges);
         
+        // 1. Add base Western font
+        std::string robotoPath = resDir + "/fonts/Roboto-Medium.ttf";
+        baseFont = fonts->AddFontFromFileTTF(robotoPath.c_str(), 16.0f * uiScale, NULL, baseRanges.Data);
+
+        // 2. Merge Chinese / CJK Font into baseFont so Chinese characters display perfectly
+        ImFontConfig mergeConfig;
+        mergeConfig.MergeMode = true;
+        mergeConfig.PixelSnapH = true;
+
+        const char* cjkCandidates[] = {
+            "C:/Windows/Fonts/msyh.ttc",   // Microsoft YaHei (Windows)
+            "C:/Windows/Fonts/simhei.ttf", // SimHei (Windows)
+            "C:/Windows/Fonts/simsun.ttc", // SimSun (Windows)
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/System/Library/Fonts/PingFang.ttc"
+        };
+
+        for (const char* cjkPath : cjkCandidates) {
+            try {
+                if (std::filesystem::is_regular_file(toFsPath(cjkPath))) {
+                    fonts->AddFontFromFileTTF(cjkPath, 16.0f * uiScale, &mergeConfig, fonts->GetGlyphRangesChineseFull());
+                    flog::info("Successfully loaded CJK font for Chinese language: {0}", cjkPath);
+                    break;
+                }
+            } catch (...) {}
+        }
+
         // Add bigger fonts for frequency select and title
-        baseFont = fonts->AddFontFromFileTTF(((std::string)(resDir + "/fonts/Roboto-Medium.ttf")).c_str(), 16.0f * uiScale, NULL, baseRanges.Data);
-        bigFont = fonts->AddFontFromFileTTF(((std::string)(resDir + "/fonts/Roboto-Medium.ttf")).c_str(), 45.0f * uiScale, NULL, bigRanges.Data);
-        hugeFont = fonts->AddFontFromFileTTF(((std::string)(resDir + "/fonts/Roboto-Medium.ttf")).c_str(), 128.0f * uiScale, NULL, hugeRanges.Data);
+        bigFont = fonts->AddFontFromFileTTF(robotoPath.c_str(), 45.0f * uiScale, NULL, bigRanges.Data);
+        hugeFont = fonts->AddFontFromFileTTF(robotoPath.c_str(), 128.0f * uiScale, NULL, hugeRanges.Data);
 
         return true;
     }

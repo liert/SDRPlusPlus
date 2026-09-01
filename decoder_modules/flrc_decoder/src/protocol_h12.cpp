@@ -3,6 +3,7 @@
 #include <gui/style.h>
 #include <iomanip>
 #include <sstream>
+#include <algorithm>
 
 namespace flrc {
 
@@ -134,74 +135,74 @@ void H12ProtocolHandler::processFrame(const DecodedFrame& frame) {
 }
 
 void H12ProtocolHandler::renderUI() {
-    ImGui::Text("H12 Stats: Total: %llu | CRC8 Valid: %llu | Pairing: %llu | Mgmt: %llu",
+    ImGui::Text("H12 统计: 总帧数: %llu | CRC8有效: %llu | 对频帧: %llu | 管理帧: %llu",
                 (unsigned long long)totalFrames, (unsigned long long)validCrc8Frames,
                 (unsigned long long)pairingFrames, (unsigned long long)mgmtFrames);
     ImGui::Separator();
 
     if (!hasData) {
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Waiting for H12 air-protocol frames...");
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "正在等待 H12 空口协议帧数据...");
         return;
     }
 
     // Frame Type & Link Status
-    const char* typeStr = "Unknown";
+    const char* typeStr = "未知帧";
     ImVec4 typeColor = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
     switch (lastParsed.frameType) {
     case H12FrameType::NORMAL_CONTROL:
-        typeStr = "Normal RC Control (32B)";
+        typeStr = "正常遥控控制帧 (32B Normal RC)";
         typeColor = ImVec4(0.2f, 1.0f, 0.2f, 1.0f);
         break;
     case H12FrameType::NORMAL_MANAGEMENT:
-        typeStr = "Management Frame (32B)";
+        typeStr = "运行链路管理帧 (32B Mgmt)";
         typeColor = ImVec4(0.3f, 0.8f, 1.0f, 1.0f);
         break;
     case H12FrameType::PAIRING_REQUEST:
-        typeStr = "Pairing Request (42B)";
+        typeStr = "对频请求帧 (42B Pairing Request)";
         typeColor = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
         break;
     case H12FrameType::PAIRING_ACK:
-        typeStr = "Pairing ACK (32B)";
+        typeStr = "对频应答帧 (32B Pairing ACK)";
         typeColor = ImVec4(0.9f, 0.5f, 1.0f, 1.0f);
         break;
     case H12FrameType::MAINTENANCE_CMD:
     case H12FrameType::MAINTENANCE_DATA:
     case H12FrameType::MAINTENANCE_RESP:
-        typeStr = "Maintenance Protocol";
+        typeStr = "维护与升级协议帧 (Maintenance)";
         typeColor = ImVec4(1.0f, 0.5f, 0.3f, 1.0f);
         break;
     default:
         break;
     }
 
-    ImGui::Text("Frame Type:");
+    ImGui::Text("帧类型 / Frame Type:");
     ImGui::SameLine();
     ImGui::TextColored(typeColor, "%s", typeStr);
 
     if (lastParsed.frameType == H12FrameType::NORMAL_CONTROL || lastParsed.frameType == H12FrameType::NORMAL_MANAGEMENT) {
-        ImGui::Text("Hop Index: %u (CH#%u) | Group: %u | Route: %s | CRC8: ",
+        ImGui::Text("跳频信道: %u (CH#%u) | 数据组: %u | 路由: %s | CRC-8: ",
                     lastParsed.hopIndex, lastParsed.hopIndex + 1, lastParsed.groupIndex,
-                    lastParsed.transparentRoute ? "Secondary" : "Primary");
+                    lastParsed.transparentRoute ? "辅助路由" : "主路由");
         ImGui::SameLine();
         if (lastParsed.crc8Valid) {
-            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "0x%02X [OK]", lastParsed.crc8Received);
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "0x%02X [校验成功 OK]", lastParsed.crc8Received);
         } else {
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "0x%02X != 0x%02X [ERR]", lastParsed.crc8Received, lastParsed.crc8Calculated);
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "0x%02X != 0x%02X [错误 ERR]", lastParsed.crc8Received, lastParsed.crc8Calculated);
         }
 
         ImGui::Spacing();
-        ImGui::Text("RC Channels (0..960, Mid=480):");
+        ImGui::Text("12路遥控摇杆通道数值 (0..960, 中位=480):");
         const char* chNames[12] = {
-            "CH1 (Roll)", "CH2 (Pitch)", "CH3 (Thr)", "CH4 (Yaw)",
-            "CH5 (AUX1)", "CH6 (AUX2)", "CH7 (AUX3)", "CH8 (AUX4)",
-            "CH9 (AUX5)", "CH10 (AUX6)", "CH11 (AUX7)", "CH12 (AUX8)"
+            "CH1 (横滚 Roll)", "CH2 (俯仰 Pitch)", "CH3 (油门 Thr)", "CH4 (航向 Yaw)",
+            "CH5 (辅助 AUX1)", "CH6 (辅助 AUX2)", "CH7 (辅助 AUX3)", "CH8 (辅助 AUX4)",
+            "CH9 (辅助 AUX5)", "CH10 (辅助 AUX6)", "CH11 (辅助 AUX7)", "CH12 (辅助 AUX8)"
         };
 
         // Render 2 columns for channels
         ImGui::Columns(2, "h12_ch_cols", false);
         for (int ch = 0; ch < 12; ch++) {
             uint16_t val = lastParsed.channels[ch];
-            float frac = std::clamp((float)val / 960.0f, 0.0f, 1.0f);
+            float frac = (std::clamp)((float)val / 960.0f, 0.0f, 1.0f);
             char buf[32];
             snprintf(buf, sizeof(buf), "%s: %u", chNames[ch], val);
             ImGui::ProgressBar(frac, ImVec2(-1.0f, 14.0f), buf);
@@ -210,24 +211,24 @@ void H12ProtocolHandler::renderUI() {
         ImGui::Columns(1);
 
         ImGui::Spacing();
-        ImGui::Text("Transparent Telemetry:");
+        ImGui::Text("透明串口数传 (Telemetry):");
         if (!lastParsed.transparentAscii.empty()) {
-            ImGui::Text("  ASCII: \"%s\"", lastParsed.transparentAscii.c_str());
+            ImGui::Text("  ASCII 字符串: \"%s\"", lastParsed.transparentAscii.c_str());
         }
         if (!lastParsed.transparentHex.empty()) {
             std::stringstream ss;
             for (uint8_t b : lastParsed.transparentHex) {
                 ss << std::uppercase << std::hex << std::setfill('0') << std::setw(2) << (int)b << " ";
             }
-            ImGui::Text("  HEX:   %s", ss.str().c_str());
+            ImGui::Text("  HEX 十六进制: %s", ss.str().c_str());
         }
     } else if (lastParsed.frameType == H12FrameType::PAIRING_REQUEST) {
-        ImGui::Text("Remote Identity: 0x%08X", lastParsed.pairingId);
+        ImGui::Text("遥控器身份 ID: 0x%08X", lastParsed.pairingId);
         std::stringstream ss;
         for (uint8_t code : lastParsed.hopTable) {
             ss << std::uppercase << std::hex << std::setfill('0') << std::setw(2) << (int)code << " ";
         }
-        ImGui::Text("Hop Sequence: %s", ss.str().c_str());
+        ImGui::Text("15信道跳频序列: %s", ss.str().c_str());
     }
 }
 

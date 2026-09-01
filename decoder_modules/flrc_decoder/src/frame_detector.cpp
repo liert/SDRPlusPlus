@@ -66,7 +66,8 @@ std::vector<DecodedFrame> FrameDetector::processSamples(const float* samples, in
 
     // Process in windows
     int maxSearchIdx = (int)_sampleBuffer.size() - minSamplesNeeded;
-    int step = (int)std::max<int>(1, (int)(samplesPerBit / 2));
+    int halfStep = (int)(samplesPerBit / 2);
+    int step = (halfStep > 1) ? halfStep : 1;
 
     for (int i = 0; i < maxSearchIdx; i += step) {
         DecodedFrame frame;
@@ -74,13 +75,16 @@ std::vector<DecodedFrame> FrameDetector::processSamples(const float* samples, in
             frames.push_back(frame);
             // Advance search position past the current frame
             int frameLenSamples = (int)(samplesPerBit * (32 + 21 + 32 + (frame.payload.size() + 4) * 8));
-            i += std::max(step, frameLenSamples);
+            i += (step > frameLenSamples) ? step : frameLenSamples;
         }
     }
 
     // Retain only unconsumed trailing samples
     if (_sampleBuffer.size() > 65536) {
-        int retain = std::min<int>((int)_sampleBuffer.size(), minSamplesNeeded * 2);
+        int retain = (int)_sampleBuffer.size();
+        if (retain > minSamplesNeeded * 2) {
+            retain = minSamplesNeeded * 2;
+        }
         _sampleBuffer.erase(_sampleBuffer.begin(), _sampleBuffer.end() - retain);
     }
 
@@ -110,7 +114,7 @@ bool FrameDetector::decodeFrameAt(int startIdx, DecodedFrame& outFrame) {
         outFrame.score = score;
     }
 
-    // 2. Extract Timing Preamble (21 bits) and Sync Word (32 bits)
+    // 2. Extract Timing Preamble (21 bits)
     int timingStartIdx = startIdx + (int)(32 * samplesPerBit);
     uint32_t recoveredTiming = 0;
     for (int b = 0; b < 21; b++) {
@@ -133,13 +137,11 @@ bool FrameDetector::decodeFrameAt(int startIdx, DecodedFrame& outFrame) {
 
     // 3. Extract Sync Word (32 bits)
     int syncStartIdx = timingStartIdx + (int)(21 * samplesPerBit);
-    uint32_t rawSync = 0;
     std::vector<uint8_t> syncBits(32);
     for (int b = 0; b < 32; b++) {
         int sIdx = syncStartIdx + (int)(b * samplesPerBit);
         if (sIdx >= (int)_sampleBuffer.size()) return false;
         syncBits[b] = (_sampleBuffer[sIdx] > 0.0f) ? 1 : 0;
-        rawSync = (rawSync << 1) | syncBits[b];
     }
 
     // Differential decode on sync word (cumxor)
@@ -148,6 +150,14 @@ bool FrameDetector::decodeFrameAt(int startIdx, DecodedFrame& outFrame) {
     for (int b = 0; b < 32; b++) {
         prevBit ^= syncBits[b];
         diffSync = (diffSync << 1) | prevBit;
+    }
+
+    // If not auto sync, check if diffSync matches configured syncWord (or with mask)
+    if (!_framingCfg.autoSyncWord) {
+        uint32_t targetSync = _framingCfg.syncWord;
+        if (diffSync != targetSync && diffSync != (targetSync ^ 0x66666666) && diffSync != (targetSync ^ 0x99999999)) {
+            return false;
+        }
     }
 
     // 4. Extract Coded Payload & CRC Bits
@@ -185,15 +195,15 @@ bool FrameDetector::decodeFrameAt(int startIdx, DecodedFrame& outFrame) {
         cumxorBytes[i] = byteVal;
     }
 
-    // 6. Test Candidate Masks (0x66, 0x99, 0x00, custom)
+    // 6. Test Candidate Masks (0x99, 0x66, 0x00, custom)
     std::vector<uint8_t> candidateMasks;
     if (_framingCfg.maskMode == MaskMode::AUTO_66_99) {
-        candidateMasks.push_back(0x66);
+        candidateMasks.push_back(0x99); // Normal transmitter default
+        candidateMasks.push_back(0x66); // Normal receiver/pairing default
+    } else if (_framingCfg.maskMode == MaskMode::FIXED_99) {
         candidateMasks.push_back(0x99);
     } else if (_framingCfg.maskMode == MaskMode::FIXED_66) {
         candidateMasks.push_back(0x66);
-    } else if (_framingCfg.maskMode == MaskMode::FIXED_99) {
-        candidateMasks.push_back(0x99);
     } else if (_framingCfg.maskMode == MaskMode::NONE_00) {
         candidateMasks.push_back(0x00);
     } else if (_framingCfg.maskMode == MaskMode::CUSTOM) {
@@ -209,9 +219,11 @@ bool FrameDetector::decodeFrameAt(int startIdx, DecodedFrame& outFrame) {
 
         // Determine actual payload length
         int payloadLen = _framingCfg.defaultPayloadLen;
-        // Check for H12 pairing frame (42 bytes) or normal (32 bytes)
+        // Check for H12 pairing frame (42 bytes), extended fragment (127 bytes), or normal (32 bytes)
         if (plainBytes.size() >= 46 && plainBytes[0] == 0x11 && plainBytes[1] == 0x22 && plainBytes[2] == 0x33) {
             payloadLen = 42;
+        } else if (plainBytes.size() >= 36 && plainBytes[0] == 0x5A) {
+            payloadLen = ((int)plainBytes.size() - 4 < 127) ? (int)plainBytes.size() - 4 : 127;
         } else if (plainBytes.size() >= 36) {
             payloadLen = 32;
         }
@@ -225,11 +237,12 @@ bool FrameDetector::decodeFrameAt(int startIdx, DecodedFrame& outFrame) {
                          ((uint32_t)plainBytes[payloadLen + 3]);
 
         // Calculate expected CRC over Sync Word + Payload
+        uint32_t actualSync = _framingCfg.autoSyncWord ? diffSync : _framingCfg.syncWord;
         uint8_t syncBuf[4] = {
-            (uint8_t)(_framingCfg.syncWord >> 24),
-            (uint8_t)(_framingCfg.syncWord >> 16),
-            (uint8_t)(_framingCfg.syncWord >> 8),
-            (uint8_t)(_framingCfg.syncWord)
+            (uint8_t)(actualSync >> 24),
+            (uint8_t)(actualSync >> 16),
+            (uint8_t)(actualSync >> 8),
+            (uint8_t)(actualSync)
         };
         std::vector<uint8_t> crcInput;
         crcInput.insert(crcInput.end(), syncBuf, syncBuf + 4);
@@ -244,7 +257,7 @@ bool FrameDetector::decodeFrameAt(int startIdx, DecodedFrame& outFrame) {
             auto now = std::chrono::system_clock::now();
             auto duration = now.time_since_epoch();
             outFrame.timestamp = std::chrono::duration<double>(duration).count();
-            outFrame.syncWord = _framingCfg.syncWord;
+            outFrame.syncWord = actualSync;
             outFrame.mask = mask;
             outFrame.rawCoded = cumxorBytes;
             outFrame.payload.assign(plainBytes.begin(), plainBytes.begin() + payloadLen);
