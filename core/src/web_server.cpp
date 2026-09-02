@@ -552,6 +552,18 @@ namespace web_server {
                             handleIncomingData(client, buf, r);
                             ++it;
                         } else {
+#ifdef _WIN32
+                            int err = WSAGetLastError();
+                            if (r == SOCKET_ERROR && (err == WSAEWOULDBLOCK || err == WSAEINTR)) {
+                                ++it;
+                                continue;
+                            }
+#else
+                            if (r == -1 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+                                ++it;
+                                continue;
+                            }
+#endif
                             closesocket(client->sock);
                             client->sock = INVALID_SOCKET;
                             it = clients.erase(it);

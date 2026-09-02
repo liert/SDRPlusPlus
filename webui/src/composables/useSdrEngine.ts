@@ -217,11 +217,15 @@ if (typeof window !== 'undefined') {
   connectBackendWs()
 }
 
-// Sync RF parameters dynamically
+// Debounced Parameter Sync to prevent USB/socket congestion
+let freqDebounceTimer: number | null = null
 watch(() => sourceConfig.centerFreqHz, (hz) => {
-  if (isBackendConnected.value) {
-    sendBackendCommand('set_freq', { freq: hz })
-  }
+  if (freqDebounceTimer) clearTimeout(freqDebounceTimer)
+  freqDebounceTimer = window.setTimeout(() => {
+    if (isBackendConnected.value) {
+      sendBackendCommand('set_freq', { freq: hz })
+    }
+  }, 40)
 })
 
 watch(() => sourceConfig.sampleRateHz, (hz) => {
@@ -230,29 +234,25 @@ watch(() => sourceConfig.sampleRateHz, (hz) => {
   }
 })
 
-watch(() => sourceConfig.lnaGain, (gain) => {
-  if (isBackendConnected.value) {
-    sendBackendCommand('set_gain', { lna: gain, vga: sourceConfig.vgaGain, amp: sourceConfig.ampEnable, biasT: sourceConfig.biasT })
-  }
-})
+let gainDebounceTimer: number | null = null
+function pushGainsToBackend() {
+  if (gainDebounceTimer) clearTimeout(gainDebounceTimer)
+  gainDebounceTimer = window.setTimeout(() => {
+    if (isBackendConnected.value) {
+      sendBackendCommand('set_gain', {
+        lna: sourceConfig.lnaGain,
+        vga: sourceConfig.vgaGain,
+        amp: sourceConfig.ampEnable,
+        biasT: sourceConfig.biasT
+      })
+    }
+  }, 30)
+}
 
-watch(() => sourceConfig.vgaGain, (gain) => {
-  if (isBackendConnected.value) {
-    sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: gain, amp: sourceConfig.ampEnable, biasT: sourceConfig.biasT })
-  }
-})
-
-watch(() => sourceConfig.ampEnable, (amp) => {
-  if (isBackendConnected.value) {
-    sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: sourceConfig.vgaGain, amp, biasT: sourceConfig.biasT })
-  }
-})
-
-watch(() => sourceConfig.biasT, (bias) => {
-  if (isBackendConnected.value) {
-    sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: sourceConfig.vgaGain, amp: sourceConfig.ampEnable, biasT: bias })
-  }
-})
+watch(() => sourceConfig.lnaGain, pushGainsToBackend)
+watch(() => sourceConfig.vgaGain, pushGainsToBackend)
+watch(() => sourceConfig.ampEnable, pushGainsToBackend)
+watch(() => sourceConfig.biasT, pushGainsToBackend)
 
 watch(() => sourceConfig.deviceSerial, (serial) => {
   if (isBackendConnected.value && serial) {
