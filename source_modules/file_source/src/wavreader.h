@@ -78,22 +78,32 @@ public:
     size_t readSamples(void* data, size_t size, bool loop = true) {
         if (!file.is_open()) return 0;
         char* _data = (char*)data;
-        file.read(_data, size);
-        size_t read = (size_t)file.gcount();
-        if (read < size) {
-            if (loop) {
-                // Loop playback from beginning of data
-                file.clear();
-                file.seekg(dataOffset, std::ios::beg);
-                file.read(&_data[read], size - read);
-                read += (size_t)file.gcount();
+        size_t totalRead = 0;
+
+        while (totalRead < size) {
+            file.read(&_data[totalRead], size - totalRead);
+            size_t bytes = (size_t)file.gcount();
+            if (bytes == 0) {
+                if (loop) {
+                    file.clear();
+                    file.seekg(dataOffset, std::ios::beg);
+                    file.read(&_data[totalRead], size - totalRead);
+                    size_t retryBytes = (size_t)file.gcount();
+                    if (retryBytes == 0) {
+                        memset(&_data[totalRead], 0, size - totalRead);
+                        break;
+                    }
+                    totalRead += retryBytes;
+                } else {
+                    memset(&_data[totalRead], 0, size - totalRead);
+                    break;
+                }
             } else {
-                // Not looping: fill remainder with zero
-                memset(&_data[read], 0, size - read);
+                totalRead += bytes;
             }
         }
-        bytesRead += read;
-        return read;
+        bytesRead += totalRead;
+        return totalRead;
     }
 
     void rewind() {

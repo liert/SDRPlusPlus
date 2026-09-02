@@ -196,10 +196,16 @@ namespace shm_manager {
         std::unique_lock<std::mutex> lock(fftMutex, std::try_to_lock);
         if (!lock.owns_lock()) return;
 
+        // Slide dynamic offset across the buffer so FFT moves through time-domain IQ samples
+        static int slideOffset = 0;
+        int maxOffset = count - FFT_SIZE;
+        int startIdx = (maxOffset > 0) ? (slideOffset % (maxOffset + 1)) : 0;
+        slideOffset = (slideOffset + 3840) % (std::max(1, maxOffset + 1));
+
         // Apply window and copy into FFTW input
         for (int i = 0; i < FFT_SIZE; i++) {
-            fftwIn[i][0] = samples[i].re * windowLut[i];
-            fftwIn[i][1] = samples[i].im * windowLut[i];
+            fftwIn[i][0] = samples[startIdx + i].re * windowLut[i];
+            fftwIn[i][1] = samples[startIdx + i].im * windowLut[i];
         }
 
         fftwf_execute(fftPlan);
