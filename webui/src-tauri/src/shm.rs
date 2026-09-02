@@ -1,4 +1,6 @@
 use std::ffi::c_void;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::Mutex;
 use serde::Serialize;
 use serde_json::Value;
@@ -21,6 +23,25 @@ const SDRPP_SHM_CMD_NAME_W: &[u16] = &[
 
 const FILE_MAP_ALL_ACCESS: u32 = 0xF001F;
 const FILE_MAP_READ: u32 = 0x0004;
+
+pub fn log_to_file(level: &str, tag: &str, msg: &str) {
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            let log_path = exe_dir.join("sdrpp_backend.log");
+            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_path) {
+                let now = std::time::SystemTime::now();
+                if let Ok(dur) = now.duration_since(std::time::UNIX_EPOCH) {
+                    let secs = dur.as_secs();
+                    let ms = dur.subsec_millis();
+                    let s = secs % 60;
+                    let m = (secs / 60) % 60;
+                    let h = (secs / 3600 + 8) % 24;
+                    let _ = writeln!(f, "[{:02}:{:02}:{:02}.{:03}] [{}] [{}] {}", h, m, s, ms, level, tag, msg);
+                }
+            }
+        }
+    }
+}
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -157,6 +178,7 @@ pub struct ShmManager {
     h_cmd_shm: isize,
     cmd_ptr: *mut ShmCmdBuffer,
     last_packet_seq: u32,
+    read_counter: u64,
 }
 
 unsafe impl Send for ShmManager {}
@@ -170,6 +192,7 @@ impl ShmManager {
             h_cmd_shm: 0,
             cmd_ptr: std::ptr::null_mut(),
             last_packet_seq: 0,
+            read_counter: 0,
         };
         mgr.try_connect();
         mgr
@@ -187,6 +210,8 @@ impl ShmManager {
                 if !p.is_null() {
                     self.h_shm = h;
                     self.header_ptr = p as *const ShmHeader;
+                    let hdr = &*self.header_ptr;
+                    log_to_file("INFO", "Tauri/Rust SHM", &format!("Successfully mapped Shared Memory! Magic=0x{:X}, Initial Seq={}", hdr.magic, hdr.seq));
                 } else {
                     CloseHandle(h);
                 }
@@ -217,6 +242,13 @@ impl ShmManager {
             if hdr.magic != 0x53445250 {
                 return None;
             }
+
+            self.read_counter += 1;
+            if self.read_counter % 120 == 1 {
+                log_to_file("INFO", "Tauri/Rust SHM", &format!("IPC read_fft_f32: seq={}, running={}, sampleRate={}, fft[0]={:.1} dBm, fft[512]={:.1} dBm",
+                    hdr.seq, hdr.running, hdr.sample_rate, hdr.fft_data[0], hdr.fft_data[512]));
+            }
+
             let slice = std::slice::from_raw_parts(
                 hdr.fft_data.as_ptr(),
                 1024,
@@ -383,6 +415,7 @@ impl ShmManager {
                 cmd_buf.param_str[0..slen].copy_from_slice(&s_bytes[0..slen]);
             }
 
+            log_to_file("INFO", "Tauri/Rust IPC", &format!("send_command: cmd='{}', params={}", cmd, params));
             cmd_buf.cmd_seq = cmd_buf.cmd_seq.wrapping_add(1);
         }
 

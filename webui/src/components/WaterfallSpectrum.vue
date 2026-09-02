@@ -9,7 +9,8 @@ import {
   isBackendConnected,
   hasLiveHackRfData,
   dspIpcFps,
-  dspSeq
+  dspSeq,
+  logUi
 } from '@/composables/useSdrEngine'
 import { liveHackRfFft } from '@/composables/useHackRf'
 import { generateColormapLut } from '@/composables/useColormaps'
@@ -168,8 +169,15 @@ function updateSimulatedFft(time: number) {
   }
 }
 
+let renderLogCounter = 0
+
 function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: number) {
   ctx.clearRect(0, 0, width, height)
+
+  renderLogCounter++
+  if (renderLogCounter % 180 === 1) {
+    logUi(`[Canvas Spectrum] w=${width}, h=${height}, isPlaying=${isPlaying.value}, hasData=${hasLiveHackRfData.value}, centerDb=${currentFft[512].toFixed(1)} dBm, liveCenterDb=${liveHackRfFft[512].toFixed(1)} dBm`)
+  }
 
   const minDb = spectrumSettings.minDb
   const maxDb = spectrumSettings.maxDb
@@ -285,6 +293,10 @@ function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: nu
 
 function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: number) {
   if (!offscreenCanvas || !offscreenCtx) return
+
+  if (renderLogCounter % 180 === 1) {
+    logUi(`[Canvas Waterfall] w=${width}, h=${height}, offscreenW=${offscreenCanvas.width}, offscreenH=${offscreenCanvas.height}`)
+  }
 
   // 1. Advance waterfall buffer smoothly
   if (isPlaying.value || isBackendConnected.value || hasLiveHackRfData.value) {

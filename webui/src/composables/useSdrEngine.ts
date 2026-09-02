@@ -95,6 +95,13 @@ export const crcSuccessRate = computed(() => {
   return ((validCrcCount.value / totalPacketsCount.value) * 100).toFixed(1)
 })
 
+export function logUi(msg: string, level = 'INFO') {
+  console.log(`[${level}] [UI/Canvas] ${msg}`)
+  try {
+    invoke('log_frontend_message', { level, msg })
+  } catch (e) {}
+}
+
 let shmFftTimer: number | null = null
 
 /**
@@ -103,6 +110,7 @@ let shmFftTimer: number | null = null
 export function initShmEngine() {
   let isPolling = false
   let frameCounter = 0
+  let pollCounter = 0
   let lastFpsCalc = performance.now()
 
   // 1. Rock-solid 60 FPS Shared Memory polling timer (16ms)
@@ -112,6 +120,10 @@ export function initShmEngine() {
       isPolling = true
       try {
         const res = await invoke<number[]>('get_shm_fft')
+        pollCounter++
+        if (pollCounter % 120 === 1 && Array.isArray(res)) {
+          logUi(`IPC pollShmFft: received ${res.length} floats (first 3: [${res.slice(0, 3).map(v => v.toFixed(1)).join(', ')}])`)
+        }
         if (Array.isArray(res) && res.length === 1024) {
           liveHackRfFft.set(res)
           if (!hasLiveHackRfData.value) {
@@ -123,8 +135,10 @@ export function initShmEngine() {
           }
           frameCounter++
         }
-      } catch (e) {
-        // Backend mapping not yet ready
+      } catch (e: any) {
+        if (pollCounter % 60 === 1) {
+          logUi(`IPC pollShmFft error: ${e?.message || e}`, 'ERROR')
+        }
       } finally {
         isPolling = false
       }

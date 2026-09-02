@@ -6,12 +6,12 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::WindowEvent;
-use shm::{ShmManager, ShmStatusInfo, GLOBAL_SHM};
+use shm::{ShmManager, ShmStatusInfo, GLOBAL_SHM, log_to_file};
 
 static BACKEND_CHILD: Mutex<Option<Child>> = Mutex::new(None);
 
 fn spawn_backend() -> bool {
-    if let Ok(mut lock) = BACKEND_CHILD.lock() {
+    if let Ok(lock) = BACKEND_CHILD.lock() {
         if lock.is_some() {
             return true;
         }
@@ -44,6 +44,7 @@ fn spawn_backend() -> bool {
                 }
 
                 if let Ok(child) = cmd.spawn() {
+                    log_to_file("INFO", "Tauri Launcher", &format!("Spawned C++ Backend process: {:?}", backend_path));
                     if let Ok(mut lock) = BACKEND_CHILD.lock() {
                         *lock = Some(child);
                     }
@@ -110,6 +111,11 @@ fn send_shm_cmd(cmd: String, params: serde_json::Value) -> bool {
 }
 
 #[tauri::command]
+fn log_frontend_message(level: String, msg: String) {
+    log_to_file(&level.to_uppercase(), "WebUI / Canvas", &msg);
+}
+
+#[tauri::command]
 fn get_backend_logs() -> String {
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(exe_dir) = current_exe.parent() {
@@ -145,6 +151,7 @@ pub fn run() {
             get_shm_fft,
             get_shm_status,
             send_shm_cmd,
+            log_frontend_message,
             get_backend_logs,
             restart_backend
         ])
