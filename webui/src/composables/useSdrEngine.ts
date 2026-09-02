@@ -95,6 +95,8 @@ export const crcSuccessRate = computed(() => {
   return ((validCrcCount.value / totalPacketsCount.value) * 100).toFixed(1)
 })
 
+let shmFftTimer: number | null = null
+
 /**
  * Initialize High-Performance Windows Shared Memory (Zero-Copy IPC)
  */
@@ -103,40 +105,38 @@ export function initShmEngine() {
   let frameCounter = 0
   let lastFpsCalc = performance.now()
 
-  // 1. High-speed zero-latency Shared Memory FFT polling loop (60 FPS)
-  const pollShmFft = async () => {
-    if (isPolling) return
-    isPolling = true
-    try {
-      const res = await invoke<number[]>('get_shm_fft')
-      if (res && res.length === 1024) {
-        liveHackRfFft.set(res)
-        if (!hasLiveHackRfData.value) {
-          hasLiveHackRfData.value = true
+  // 1. Rock-solid 60 FPS Shared Memory polling timer (16ms)
+  if (!shmFftTimer) {
+    shmFftTimer = window.setInterval(async () => {
+      if (isPolling) return
+      isPolling = true
+      try {
+        const res = await invoke<number[]>('get_shm_fft')
+        if (Array.isArray(res) && res.length === 1024) {
+          liveHackRfFft.set(res)
+          if (!hasLiveHackRfData.value) {
+            hasLiveHackRfData.value = true
+          }
+          if (!isBackendConnected.value) {
+            isBackendConnected.value = true
+            backendStatusText.value = '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)'
+          }
+          frameCounter++
         }
-        if (!isBackendConnected.value) {
-          isBackendConnected.value = true
-          backendStatusText.value = '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)'
-        }
-        frameCounter++
+      } catch (e) {
+        // Backend mapping not yet ready
+      } finally {
+        isPolling = false
       }
-    } catch (e) {
-      // Backend mapping not yet ready
-    } finally {
-      isPolling = false
-    }
 
-    const now = performance.now()
-    if (now - lastFpsCalc >= 1000) {
-      dspIpcFps.value = Math.round((frameCounter * 1000) / (now - lastFpsCalc))
-      frameCounter = 0
-      lastFpsCalc = now
-    }
-
-    requestAnimationFrame(pollShmFft)
+      const now = performance.now()
+      if (now - lastFpsCalc >= 1000) {
+        dspIpcFps.value = Math.round((frameCounter * 1000) / (now - lastFpsCalc))
+        frameCounter = 0
+        lastFpsCalc = now
+      }
+    }, 16)
   }
-
-  requestAnimationFrame(pollShmFft)
 
   // 2. Poll Metadata and Decoded Packet Ring Buffer every 100ms
   if (!shmPollTimer) {

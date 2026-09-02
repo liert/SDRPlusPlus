@@ -394,15 +394,29 @@ function onWheel(e: WheelEvent) {
   vfo.bandwidthHz = Math.max(100000, Math.min(sourceConfig.sampleRateHz, vfo.bandwidthHz + delta))
 }
 
+let resizeObserver: ResizeObserver | null = null
+
 onMounted(() => {
   window.addEventListener('resize', handleResize)
   window.addEventListener('mousemove', onGlobalMouseMove)
   window.addEventListener('mouseup', onGlobalMouseUp)
+  
+  if (containerRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      handleResize()
+    })
+    resizeObserver.observe(containerRef.value)
+  }
+
   handleResize()
   animFrameId = requestAnimationFrame(loop)
 })
 
 onUnmounted(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
   window.removeEventListener('resize', handleResize)
   window.removeEventListener('mousemove', onGlobalMouseMove)
   window.removeEventListener('mouseup', onGlobalMouseUp)
