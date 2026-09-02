@@ -38,6 +38,7 @@ public:
     void setPanadapterIF(double freq);
 
     std::vector<std::string> getSourceNames();
+    std::string getSelectedSource() const { return selectedName; }
 
     Event<std::string> onSourceRegistered;
     Event<std::string> onSourceUnregister;

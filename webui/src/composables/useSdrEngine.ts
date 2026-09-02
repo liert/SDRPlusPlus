@@ -16,7 +16,8 @@ import {
   updateHackRfVgaGain,
   updateHackRfAmp,
   updateHackRfBiasT,
-  liveHackRfFft
+  liveHackRfFft,
+  hasLiveHackRfData
 } from './useHackRf'
 
 export const isPlaying = ref(false)
@@ -25,9 +26,16 @@ export const totalPacketsCount = ref(0)
 export const validCrcCount = ref(0)
 export const currentLang = ref<'zh' | 'en'>('zh')
 
+// C++ Backend WebSocket Connection State
+export const isBackendConnected = ref(false)
+export const backendStatusText = ref('未连接 C++ 后端 (使用 WebUSB / 前端模式)')
+
+let backendWs: WebSocket | null = null
+let reconnectTimer: number | null = null
+
 // Source Configuration
 export const sourceConfig = reactive<SourceConfig>({
-  type: 'file',
+  type: 'hackrf',
   centerFreqHz: 2400000000,
   sampleRateHz: 8000000,
   lnaGain: 32,
@@ -88,28 +96,141 @@ export const crcSuccessRate = computed(() => {
   return ((validCrcCount.value / totalPacketsCount.value) * 100).toFixed(1)
 })
 
-// Sync RF parameters dynamically to connected HackRF hardware
+/**
+ * Connect to C++ Backend Server via WebSocket (ws://127.0.0.1:5259/ws)
+ */
+export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
+  if (typeof window === 'undefined') return
+  if (backendWs && (backendWs.readyState === WebSocket.OPEN || backendWs.readyState === WebSocket.CONNECTING)) {
+    return
+  }
+
+  try {
+    backendWs = new WebSocket(url)
+    backendWs.binaryType = 'arraybuffer'
+
+    backendWs.onopen = () => {
+      isBackendConnected.value = true
+      backendStatusText.value = '⚡ C++ 后端已连接 (高性能 DSP 流)'
+      console.log('Connected to SDR++ C++ Backend Engine over WebSocket')
+      sendBackendCommand('get_status')
+    }
+
+    backendWs.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        // Binary FFT frame: Float32Array calculated in C++ by FFTW3 / Volk
+        const floats = new Float32Array(event.data)
+        if (floats.length === 1024) {
+          liveHackRfFft.set(floats)
+          hasLiveHackRfData.value = true
+        }
+      } else if (typeof event.data === 'string') {
+        try {
+          const msg = JSON.parse(event.data)
+          if (msg.type === 'packet') {
+            // Real C++ decoded packet frame from flrc_decoder
+            packetHistory.value.unshift(msg as DecodedPacket)
+            if (packetHistory.value.length > 200) {
+              packetHistory.value.pop()
+            }
+            totalPacketsCount.value++
+            if (msg.crcValid) {
+              validCrcCount.value++
+            }
+          } else if (msg.type === 'status' || msg.status === 'ok') {
+            if (msg.running !== undefined) {
+              isPlaying.value = msg.running
+            }
+          }
+        } catch (e) {
+          console.warn('JSON parsing error:', e)
+        }
+      }
+    }
+
+    backendWs.onclose = () => {
+      isBackendConnected.value = false
+      backendStatusText.value = '未连接 C++ 后端 (使用 WebUSB / 前端模式)'
+      backendWs = null
+      scheduleReconnect()
+    }
+
+    backendWs.onerror = () => {
+      isBackendConnected.value = false
+    }
+  } catch (err) {
+    isBackendConnected.value = false
+    scheduleReconnect()
+  }
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) clearTimeout(reconnectTimer)
+  reconnectTimer = window.setTimeout(() => {
+    connectBackendWs()
+  }, 2500)
+}
+
+export function sendBackendCommand(cmd: string, params: Record<string, any> = {}) {
+  if (backendWs && backendWs.readyState === WebSocket.OPEN) {
+    backendWs.send(JSON.stringify({ cmd, ...params }))
+  }
+}
+
+// Auto-connect on startup
+if (typeof window !== 'undefined') {
+  connectBackendWs()
+}
+
+// Sync RF parameters dynamically
 watch(() => sourceConfig.centerFreqHz, (hz) => {
+  if (isBackendConnected.value) {
+    sendBackendCommand('set_freq', { freq: hz })
+  }
   if (hackrfInfo.isConnected) updateHackRfFrequency(hz)
 })
+
 watch(() => sourceConfig.sampleRateHz, (hz) => {
+  if (isBackendConnected.value) {
+    sendBackendCommand('set_samplerate', { sampleRate: hz })
+  }
   if (hackrfInfo.isConnected) updateHackRfSampleRate(hz)
 })
+
 watch(() => sourceConfig.lnaGain, (gain) => {
+  if (isBackendConnected.value) {
+    sendBackendCommand('set_gain', { lna: gain, vga: sourceConfig.vgaGain, amp: sourceConfig.ampEnable, biasT: sourceConfig.biasT })
+  }
   if (hackrfInfo.isConnected) updateHackRfLnaGain(gain)
 })
+
 watch(() => sourceConfig.vgaGain, (gain) => {
+  if (isBackendConnected.value) {
+    sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: gain, amp: sourceConfig.ampEnable, biasT: sourceConfig.biasT })
+  }
   if (hackrfInfo.isConnected) updateHackRfVgaGain(gain)
 })
+
 watch(() => sourceConfig.ampEnable, (amp) => {
+  if (isBackendConnected.value) {
+    sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: sourceConfig.vgaGain, amp, biasT: sourceConfig.biasT })
+  }
   if (hackrfInfo.isConnected) updateHackRfAmp(amp)
 })
+
 watch(() => sourceConfig.biasT, (bias) => {
+  if (isBackendConnected.value) {
+    sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: sourceConfig.vgaGain, amp: sourceConfig.ampEnable, biasT: bias })
+  }
   if (hackrfInfo.isConnected) updateHackRfBiasT(bias)
 })
 
 // Switch source type handler
-watch(() => sourceConfig.type, (newType, oldType) => {
+watch(() => sourceConfig.type, (newType) => {
+  if (isBackendConnected.value) {
+    const sname = newType === 'hackrf' ? 'HackRF Source' : (newType === 'file' ? 'File Source' : 'RTL-SDR Source')
+    sendBackendCommand('set_source', { source: sname })
+  }
   if (isPlaying.value) {
     stopEngine()
     startEngine()
@@ -117,25 +238,40 @@ watch(() => sourceConfig.type, (newType, oldType) => {
 })
 
 /**
- * 严格计算当前 VFO 滤波窗口与物理信号频带的重叠度及解调锁定状态：
- * - 文件源模式：真实录音文件中的 H12 FLRC 信号分布在 +1.40 MHz 与 -1.60 MHz
- * - HackRF 硬件模式：根据实时 WebUSB FFT 能量或硬件调谐频点实时判定
- * - 仿真器模式：位于中心 0 Hz 或设定测试点
+ * Calculate VFO signal lock and SNR
  */
 export function checkVfoSignalLock() {
   const vfoMin = vfo.offsetHz - vfo.bandwidthHz / 2
   const vfoMax = vfo.offsetHz + vfo.bandwidthHz / 2
 
-  if (sourceConfig.type === 'file') {
-    // Channel 1: +1.40 MHz
-    const ch1Center = 1400000
-    const ch1Min = 800000
-    const ch1Max = 2000000
+  if (isBackendConnected.value || (sourceConfig.type === 'hackrf' && (hasLiveHackRfData.value || hackrfInfo.isStreaming))) {
+    // Analyze live FFT power in the VFO frequency passband
+    const fftLen = liveHackRfFft.length
+    const binStart = Math.max(0, Math.min(fftLen - 1, Math.floor((0.5 + vfoMin / sourceConfig.sampleRateHz) * fftLen)))
+    const binEnd = Math.max(0, Math.min(fftLen - 1, Math.floor((0.5 + vfoMax / sourceConfig.sampleRateHz) * fftLen)))
 
-    // Channel 2: -1.60 MHz
-    const ch2Center = -1600000
-    const ch2Min = -2200000
-    const ch2Max = -1000000
+    let maxPwr = -120
+    let maxIdx = binStart
+    for (let b = binStart; b <= binEnd; b++) {
+      if (liveHackRfFft[b] > maxPwr) {
+        maxPwr = liveHackRfFft[b]
+        maxIdx = b
+      }
+    }
+
+    const noiseFloor = -105 + (sourceConfig.lnaGain / 40.0) * 16.0 + (sourceConfig.vgaGain / 62.0) * 10.0
+    const snr = maxPwr - noiseFloor
+
+    if (snr > 7.0) {
+      const peakRelHz = ((maxIdx / fftLen) - 0.5) * sourceConfig.sampleRateHz
+      const devKhz = (peakRelHz - vfo.offsetHz) / 1000
+      return { locked: true, snr: Math.min(32.0, Math.max(6.0, snr)), centerOffsetKhz: devKhz, isChannel1: vfo.offsetHz >= 0 }
+    }
+    return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
+  } else if (sourceConfig.type === 'file') {
+    // Channel 1: +1.40 MHz, Channel 2: -1.60 MHz
+    const ch1Center = 1400000, ch1Min = 800000, ch1Max = 2000000
+    const ch2Center = -1600000, ch2Min = -2200000, ch2Max = -1000000
 
     const overlap1 = Math.max(0, Math.min(vfoMax, ch1Max) - Math.max(vfoMin, ch1Min))
     const overlap2 = Math.max(0, Math.min(vfoMax, ch2Max) - Math.max(vfoMin, ch2Min))
@@ -153,54 +289,14 @@ export function checkVfoSignalLock() {
     }
 
     return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
-  } else if (sourceConfig.type === 'hackrf') {
-    if (hackrfInfo.isStreaming) {
-      // Analyze live FFT power in the VFO frequency passband
-      const fftLen = liveHackRfFft.length
-      const binStart = Math.max(0, Math.min(fftLen - 1, Math.floor((0.5 + vfoMin / sourceConfig.sampleRateHz) * fftLen)))
-      const binEnd = Math.max(0, Math.min(fftLen - 1, Math.floor((0.5 + vfoMax / sourceConfig.sampleRateHz) * fftLen)))
-
-      let maxPwr = -120
-      let maxIdx = binStart
-      for (let b = binStart; b <= binEnd; b++) {
-        if (liveHackRfFft[b] > maxPwr) {
-          maxPwr = liveHackRfFft[b]
-          maxIdx = b
-        }
-      }
-
-      // Base noise floor calculation
-      const noiseFloor = -105 + (sourceConfig.lnaGain / 40.0) * 16.0 + (sourceConfig.vgaGain / 62.0) * 10.0
-      const snr = maxPwr - noiseFloor
-
-      if (snr > 7.0) {
-        const peakRelHz = ((maxIdx / fftLen) - 0.5) * sourceConfig.sampleRateHz
-        const devKhz = (peakRelHz - vfo.offsetHz) / 1000
-        return { locked: true, snr: Math.min(32.0, Math.max(6.0, snr)), centerOffsetKhz: devKhz, isChannel1: vfo.offsetHz >= 0 }
-      }
-    } else {
-      // Offline / standby HackRF hardware signal detection based on tuned VFO
-      const ch1Center = 0
-      const ch1Min = -600000
-      const ch1Max = 600000
-      const overlap = Math.max(0, Math.min(vfoMax, ch1Max) - Math.max(vfoMin, ch1Min))
-      if (overlap > 300000) {
-        const ratio = overlap / 1200000
-        const devKhz = (vfo.offsetHz - ch1Center) / 1000
-        const gainBoost = (sourceConfig.lnaGain + sourceConfig.vgaGain) / 5.0
-        return { locked: true, snr: Math.min(30.0, ratio * 20.0 + gainBoost), centerOffsetKhz: devKhz, isChannel1: true }
-      }
-    }
-    return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
   } else {
-    // Simulator mode: carrier at 0 Hz
-    const simCenter = 0
-    const simMin = -500000
-    const simMax = 500000
-    const overlap = Math.max(0, Math.min(vfoMax, simMax) - Math.max(vfoMin, simMin))
-    if (overlap > 250000) {
-      const devKhz = (vfo.offsetHz - simCenter) / 1000
-      return { locked: true, snr: 26.0, centerOffsetKhz: devKhz, isChannel1: true }
+    // Offline / Standby mode
+    const ch1Min = -600000, ch1Max = 600000
+    const overlap = Math.max(0, Math.min(vfoMax, ch1Max) - Math.max(vfoMin, ch1Min))
+    if (overlap > 300000) {
+      const ratio = overlap / 1200000
+      const devKhz = vfo.offsetHz / 1000
+      return { locked: true, snr: Math.min(30.0, ratio * 22.0), centerOffsetKhz: devKhz, isChannel1: true }
     }
     return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
   }
@@ -217,6 +313,9 @@ let playDurationSec = 0
 
 export function togglePlay() {
   isPlaying.value = !isPlaying.value
+  if (isBackendConnected.value) {
+    sendBackendCommand(isPlaying.value ? 'start' : 'stop')
+  }
   if (isPlaying.value) {
     startEngine()
   } else {
@@ -260,39 +359,35 @@ function startEngine() {
 
   playDurationSec = 0
 
+  if (isBackendConnected.value) {
+    // When C++ Backend is connected, it handles DSP and frame decoding on the C++ side!
+    return
+  }
+
   if (sourceConfig.type === 'hackrf') {
-    // If HackRF WebUSB is connected, start physical RX stream
     if (hackrfInfo.isConnected) {
       startHackRfRx()
     }
   } else if (sourceConfig.type === 'file') {
-    // File Source: Loop & Single-pass playback controller
     playbackProgressTimer = window.setInterval(() => {
       if (!isPlaying.value) return
       playDurationSec += 0.5
       if (!sourceConfig.loop && playDurationSec >= 6.0) {
-        // File reached end in single-pass mode -> automatically stop
         stopEngine()
         isPlaying.value = false
       }
     }, 500)
   }
 
-  // Real-time Demodulation Stream Engine (Strictly gated by VFO overlap!)
+  // Fallback simulator loop when C++ backend is not connected
   packetGenTimer = window.setInterval(() => {
-    if (!isPlaying.value) return
+    if (!isPlaying.value || isBackendConnected.value) return
 
-    // 1. Check if VFO passband is currently covering real RF energy
     const lock = checkVfoSignalLock()
-    if (!lock.locked) {
-      return
-    }
+    if (!lock.locked) return
 
-    // 2. Decode frames with realistic signal parameters
     const now = new Date()
     const timeStr = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0')
-    
-    // Near center -> 98% CRC success; Edge of band -> bit error & CRC failure
     const isValid = Math.random() < Math.min(0.98, lock.snr / 25.0)
     const id = ++totalPacketsCount.value
     if (isValid) validCrcCount.value++

@@ -7,7 +7,8 @@ import {
   totalPacketsCount,
   validCrcCount,
   crcSuccessRate,
-  fps
+  fps,
+  isBackendConnected
 } from '@/composables/useSdrEngine'
 import { hackrfInfo } from '@/composables/useHackRf'
 import {
@@ -19,7 +20,8 @@ import {
   Cpu,
   Layers,
   Maximize2,
-  Usb
+  Usb,
+  Zap
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -55,19 +57,26 @@ function formatFreq(freqHz: number): string {
         <span>{{ isPlaying ? (currentLang === 'zh' ? '停止 (Stop)' : 'Stop') : (currentLang === 'zh' ? '启动 (Play)' : 'Start') }}</span>
       </button>
 
-      <!-- Source Status Badge -->
+      <!-- Source & C++ Backend Status Badge -->
       <div class="hidden sm:flex items-center gap-2 bg-sdr-dark/80 border border-sdr-border px-2.5 py-1 rounded text-xs font-mono">
         <component :is="sourceConfig.type === 'hackrf' ? Usb : Radio" class="w-3.5 h-3.5 text-cyan-400" />
         <span class="text-slate-400 font-sans">源:</span>
         <b class="text-slate-200 uppercase">{{ sourceConfig.type }}</b>
         <span class="text-slate-500">|</span>
         <span class="text-emerald-400">{{ (sourceConfig.sampleRateHz / 1e6).toFixed(3) }} MSPS</span>
-        <template v-if="sourceConfig.type === 'hackrf'">
-          <span class="text-slate-500">|</span>
-          <span :class="hackrfInfo.isConnected ? 'text-cyan-400 font-bold' : 'text-slate-500'">
-            {{ hackrfInfo.isConnected ? (hackrfInfo.isStreaming ? '● USB 采集中' : '● USB 已连接') : '○ USB 未连接' }}
-          </span>
-        </template>
+
+        <!-- Backend or WebUSB Pill -->
+        <span class="text-slate-500">|</span>
+        <span v-if="isBackendConnected" class="text-amber-400 font-bold flex items-center gap-1">
+          <Zap class="w-3 h-3 text-amber-400 animate-pulse" />
+          <span>C++ 后端推流中</span>
+        </span>
+        <span v-else-if="sourceConfig.type === 'hackrf'" :class="hackrfInfo.isConnected ? 'text-cyan-400 font-bold' : 'text-slate-500'">
+          {{ hackrfInfo.isConnected ? (hackrfInfo.isStreaming ? '● WebUSB 采集中' : '● WebUSB 已连接') : '○ WebUSB 未连接' }}
+        </span>
+        <span v-else class="text-blue-400">
+          ● 本地文件
+        </span>
       </div>
     </div>
 

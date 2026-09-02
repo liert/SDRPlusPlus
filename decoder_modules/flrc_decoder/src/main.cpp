@@ -25,6 +25,7 @@
 #include "protocol_raw.h"
 #include "protocol_flrc.h"
 #include "protocol_h12.h"
+#include <web_server.h>
 
 #define CONCAT(a, b) ((std::string(a) + b).c_str())
 
@@ -148,6 +149,48 @@ private:
                 }
                 _this->totalFrameCount++;
                 if (frame.crcValid) _this->validFrameCount++;
+
+                // Broadcast real-time decoded packet to WebUI WebSocket
+                nlohmann::json j;
+                j["type"] = "packet";
+                j["id"] = (uint64_t)_this->totalFrameCount;
+
+                auto now = std::chrono::system_clock::now();
+                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+                time_t t = std::chrono::system_clock::to_time_t(now);
+                char tbuf[64];
+                struct tm* ptm = localtime(&t);
+                if (ptm) {
+                    snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d.%03d", ptm->tm_hour, ptm->tm_min, ptm->tm_sec, (int)ms.count());
+                } else {
+                    snprintf(tbuf, sizeof(tbuf), "00:00:00.000");
+                }
+                j["timestamp"] = tbuf;
+
+                char syncBuf[16], maskBuf[16], crcBuf[16];
+                snprintf(syncBuf, sizeof(syncBuf), "0x%08X", (unsigned int)frame.syncWord);
+                snprintf(maskBuf, sizeof(maskBuf), "0x%02X", (unsigned int)frame.mask);
+                snprintf(crcBuf, sizeof(crcBuf), "0x%08X", (unsigned int)frame.hwCrc);
+                j["syncWord"] = syncBuf;
+                j["mask"] = maskBuf;
+                j["hwCrc"] = crcBuf;
+                j["crcValid"] = frame.crcValid;
+                j["freqOffsetKhz"] = _this->vfo ? (_this->vfo->getOffset() / 1000.0) : 0.0;
+                j["length"] = frame.payload.size();
+                j["score"] = frame.crcValid ? 10.0 : 4.0;
+
+                std::string hexStr, asciiStr;
+                for (uint8_t b : frame.payload) {
+                    char h[4];
+                    snprintf(h, sizeof(h), "%02X ", b);
+                    hexStr += h;
+                    asciiStr += (b >= 32 && b <= 126) ? (char)b : '.';
+                }
+                if (!hexStr.empty()) hexStr.pop_back();
+                j["payloadHex"] = hexStr;
+                j["payloadAscii"] = asciiStr;
+
+                web_server::broadcastPacket(j);
             }
         }
     }
