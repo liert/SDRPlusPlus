@@ -243,6 +243,10 @@ impl ShmManager {
                 return None;
             }
 
+            if hdr.running == 0 || hdr.seq == 0 {
+                return None;
+            }
+
             self.read_counter += 1;
             if self.read_counter % 120 == 1 {
                 log_to_file("INFO", "Tauri/Rust SHM", &format!("IPC read_fft_f32: seq={}, running={}, sampleRate={}, fft[0]={:.1} dBm, fft[512]={:.1} dBm",

@@ -87,8 +87,8 @@ function updateSimulatedFft(time: number) {
   const minDb = spectrumSettings.minDb
   const maxDb = spectrumSettings.maxDb
 
-  // Case 1: Real-time Live FFT from C++ Backend (via WebSocket)
-  if (hasLiveHackRfData.value || isBackendConnected.value) {
+  // Case 1: Real-time Live FFT from C++ Backend when streaming
+  if (isPlaying.value && hasLiveHackRfData.value) {
     for (let i = 0; i < fftSize; i++) {
       const liveVal = liveHackRfFft[i]
       const alpha = 1.0 - spectrumSettings.smoothing
@@ -103,69 +103,12 @@ function updateSimulatedFft(time: number) {
     return
   }
 
-  // Case 2: Dynamic simulation based on tuned frequency when offline
+  // Case 2: Standby idle noise floor when stopped
   for (let i = 0; i < fftSize; i++) {
-    const freqRel = (i / fftSize - 0.5) * sourceConfig.sampleRateHz
-    let noise = minDb + Math.random() * 8.0 - 5.0
-
-    if (sourceConfig.type === 'hackrf') {
-      const gainOffset = (sourceConfig.lnaGain / 40.0) * 16.0 + (sourceConfig.vgaGain / 62.0) * 12.0 + (sourceConfig.ampEnable ? 14.0 : 0.0)
-      noise = minDb + gainOffset + (Math.random() * 6.0 - 3.0)
-
-      if (isPlaying.value) {
-        const distDC = Math.abs(freqRel)
-        if (distDC < 50000) {
-          noise += (1 - distDC / 50000) * 18.0
-        }
-
-        const targetFreq1 = 2401400000
-        const targetFreq2 = 2398400000
-        const currFreq = sourceConfig.centerFreqHz + freqRel
-
-        const dist1 = Math.abs(currFreq - targetFreq1)
-        if (dist1 < 600000) {
-          const shape = Math.cos((dist1 / 600000) * (Math.PI / 2))
-          noise += shape * 60.0 * (0.85 + Math.sin(time * 8 + i * 0.05) * 0.15)
-        }
-
-        const dist2 = Math.abs(currFreq - targetFreq2)
-        if (dist2 < 600000) {
-          const shape = Math.cos((dist2 / 600000) * (Math.PI / 2))
-          noise += shape * 54.0 * (0.8 + Math.cos(time * 6 + i * 0.04) * 0.2)
-        }
-      }
-    } else if (sourceConfig.type === 'file') {
-      if (isPlaying.value) {
-        const dist1 = Math.abs(freqRel - 1400000)
-        if (dist1 < 650000) {
-          const shape = Math.cos((dist1 / 650000) * (Math.PI / 2))
-          noise += shape * 62.0 * (0.85 + Math.sin(time * 8 + i * 0.05) * 0.15)
-        }
-
-        const dist2 = Math.abs(freqRel - (-1600000))
-        if (dist2 < 650000) {
-          const shape = Math.cos((dist2 / 650000) * (Math.PI / 2))
-          noise += shape * 55.0 * (0.8 + Math.cos(time * 6 + i * 0.04) * 0.2)
-        }
-
-        const distDC = Math.abs(freqRel)
-        if (distDC < 50000) {
-          noise += (1 - distDC / 50000) * 20.0
-        }
-      }
-    } else {
-      const gainOffset = (sourceConfig.lnaGain / 40.0) * 12.0 + (sourceConfig.vgaGain / 62.0) * 8.0
-      noise = minDb + gainOffset + (Math.random() * 5.0 - 2.5)
-    }
-
-    const alpha = 1.0 - spectrumSettings.smoothing
-    currentFft[i] = currentFft[i] * (1 - alpha) + noise * alpha
-
-    if (currentFft[i] > peakFft[i]) {
-      peakFft[i] = currentFft[i]
-    } else {
-      peakFft[i] -= 0.15
-    }
+    const alpha = 0.2
+    const idleNoise = minDb + Math.random() * 3.0
+    currentFft[i] = currentFft[i] * (1 - alpha) + idleNoise * alpha
+    peakFft[i] = Math.max(minDb, peakFft[i] - 0.5)
   }
 }
 
@@ -298,8 +241,8 @@ function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: n
     logUi(`[Canvas Waterfall] w=${width}, h=${height}, offscreenW=${offscreenCanvas.width}, offscreenH=${offscreenCanvas.height}`)
   }
 
-  // 1. Advance waterfall buffer smoothly
-  if (isPlaying.value || isBackendConnected.value || hasLiveHackRfData.value) {
+  // 1. Advance waterfall buffer smoothly ONLY when streaming
+  if (isPlaying.value && hasLiveHackRfData.value) {
     offscreenCtx.drawImage(offscreenCanvas, 0, 0, width, height - 1, 0, 1, width, height - 1)
 
     const rowImg = getRowImageData(offscreenCtx, width)

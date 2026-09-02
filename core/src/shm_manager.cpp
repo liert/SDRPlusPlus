@@ -131,6 +131,11 @@ namespace shm_manager {
         shmHeader->centerFreq = 2400000000.0;
         shmHeader->lnaGain = 32;
         shmHeader->vgaGain = 20;
+        shmHeader->running = 0;
+        shmHeader->seq = 0;
+        for (int i = 0; i < 1024; i++) {
+            shmHeader->fftData[i] = -120.0f; // Silence / Noise floor baseline
+        }
 
         // Command Buffer Shared Memory
         hCmdShm = CreateFileMappingW(
