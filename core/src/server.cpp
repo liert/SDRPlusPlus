@@ -219,8 +219,24 @@ namespace server {
                     }
                 }
                 if (!matched.empty()) {
+                    bool wasRunning = running;
+                    if (wasRunning) {
+                        sigpath::sourceManager.stop();
+                        running = false;
+                    }
                     sourceId = sourceList.keyId(matched);
                     sigpath::sourceManager.selectSource(matched);
+
+                    if (params.contains("path") && core::moduleManager.modules.find("file_source") != core::moduleManager.modules.end()) {
+                        typedef void (*file_set_path_fn)(const char*, bool);
+                        auto fn = (file_set_path_fn)GetProcAddress((HMODULE)core::moduleManager.modules["file_source"].handle, "file_source_set_path");
+                        if (fn) fn(params["path"].get<std::string>().c_str(), true);
+                    }
+
+                    if (wasRunning) {
+                        sigpath::sourceManager.start();
+                        running = true;
+                    }
                     res["status"] = "ok";
                     res["source"] = matched;
                 } else {

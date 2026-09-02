@@ -36,7 +36,7 @@ export const sourceConfig = reactive<SourceConfig>({
   type: 'hackrf',
   centerFreqHz: 2400000000,
   sampleRateHz: 8000000,
-  lnaGain: 32,
+  lnaGain: 16,
   vgaGain: 20,
   ampEnable: false,
   biasT: false,
@@ -79,7 +79,7 @@ export const vfo = reactive<VfoState>({
 // Spectrum & Waterfall Visual Settings
 export const spectrumSettings = reactive<SpectrumSettings>({
   minDb: -100,
-  maxDb: -20,
+  maxDb: 20,
   fftSize: 1024,
   smoothing: 0.7,
   colormap: 'turbo',
@@ -245,10 +245,18 @@ watch(() => sourceConfig.deviceSerial, (serial) => {
 // Switch source type handler
 watch(() => sourceConfig.type, (newType) => {
   const sname = newType === 'hackrf' ? 'HackRF' : (newType === 'file' ? 'File Source' : 'RTL-SDR')
-  sendBackendCommand('set_source', { source: sname })
-  if (isPlaying.value) {
-    sendBackendCommand('stop')
-    sendBackendCommand('start')
+  sendBackendCommand('set_source', {
+    source: sname,
+    path: sourceConfig.filePath
+  })
+})
+
+watch(() => sourceConfig.filePath, (path) => {
+  if (sourceConfig.type === 'file') {
+    sendBackendCommand('set_source', {
+      source: 'File Source',
+      path
+    })
   }
 })
 

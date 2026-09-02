@@ -38,10 +38,11 @@ ConfigManager config;
 
 class FileSourceModule : public ModuleManager::Instance {
 public:
+    inline static FileSourceModule* instance = nullptr;
+
     FileSourceModule(std::string name) : fileSelect("", { "IQ & WAV Files", "*.wav *.iq *.bin *.raw", "All Files", "*" }) {
         this->name = name;
-
-        if (core::args["server"].b()) { return; }
+        instance = this;
 
         config.acquire();
         std::string savedPath = config.conf.contains("path") ? (std::string)config.conf["path"] : "";
@@ -65,11 +66,15 @@ public:
         handler.stopHandler = stop;
         handler.tuneHandler = tune;
         handler.stream = &stream;
+
+        sigpath::sourceManager.registerSource("File Source", &handler);
         sigpath::sourceManager.registerSource("File", &handler);
+        flog::info("FileSourceModule registered: 'File Source' and 'File'");
     }
 
     ~FileSourceModule() {
         stop(this);
+        sigpath::sourceManager.unregisterSource("File Source");
         sigpath::sourceManager.unregisterSource("File");
     }
 
@@ -98,7 +103,7 @@ public:
             if (!reader->isValid()) {
                 delete reader;
                 reader = NULL;
-                flog::error("Failed to open file: {}", path);
+                flog::error("Failed to open file: {0}", path);
                 return;
             }
             if (reader->isWavFile()) {
@@ -113,13 +118,12 @@ public:
             core::setInputSampleRate(sampleRate);
             std::string filename = toFsPath(path).filename().string();
             centerFreq = getFrequency(filename);
-            tuner::tune(tuner::TUNER_MODE_IQ_ONLY, "", centerFreq);
             currentFilePath = path;
             fileSelect.setPath(path, false);
-            flog::info("FileSource loaded: {} at SR: {} Hz, Freq: {} Hz", path, sampleRate, centerFreq);
+            flog::info("FileSource loaded: {0} (SR: {1} Hz, Freq: {2} Hz)", path, sampleRate, centerFreq);
         }
         catch (const std::exception& e) {
-            flog::error("Error loading file: {}", e.what());
+            flog::error("Error loading file: {0}", e.what());
         }
     }
 
@@ -146,47 +150,61 @@ private:
     static void menuSelected(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
         core::setInputSampleRate(_this->sampleRate);
-        tuner::tune(tuner::TUNER_MODE_IQ_ONLY, "", _this->centerFreq);
-        sigpath::iqFrontEnd.setBuffering(false);
-        gui::waterfall.centerFrequencyLocked = true;
         flog::info("FileSourceModule '{0}': Menu Select!", _this->name);
     }
 
     static void menuDeselected(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
-        sigpath::iqFrontEnd.setBuffering(true);
-        gui::waterfall.centerFrequencyLocked = false;
         flog::info("FileSourceModule '{0}': Menu Deselect!", _this->name);
     }
 
     static void start(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
         if (_this->running) { return; }
+
         if (_this->reader == NULL) {
-            flog::warn("FileSource: Cannot start, no file loaded!");
+            // Try auto-discovering sample IQ file
+            std::vector<std::string> candidates = {
+                "fresh_pairing_2400_8.iq",
+                "../fresh_pairing_2400_8.iq",
+                "webui/public/fresh_pairing_2400_8.iq"
+            };
+            for (const auto& c : candidates) {
+                if (std::filesystem::is_regular_file(toFsPath(c))) {
+                    _this->loadFile(c);
+                    break;
+                }
+            }
+        }
+
+        if (_this->reader == NULL) {
+            flog::warn("FileSource: Cannot start, no IQ file loaded!");
             return;
         }
+
         _this->running = true;
         _this->workerThread = std::thread(worker, _this);
-        flog::info("FileSourceModule '{0}': Start!", _this->name);
+        flog::info("FileSourceModule '{0}': Start streaming IQ file!", _this->name);
     }
 
     static void stop(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
         if (!_this->running) { return; }
-        if (_this->reader == NULL) { return; }
+        _this->running = false;
         _this->stream.stopWriter();
         if (_this->workerThread.joinable()) {
             _this->workerThread.join();
         }
         _this->stream.clearWriteStop();
-        _this->running = false;
-        _this->reader->rewind();
+        if (_this->reader) {
+            _this->reader->rewind();
+        }
         flog::info("FileSourceModule '{0}': Stop!", _this->name);
     }
 
     static void tune(double freq, void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
+        _this->centerFreq = freq;
         flog::info("FileSourceModule '{0}': Tune: {1}!", _this->name, freq);
     }
 
@@ -260,6 +278,7 @@ private:
                     _this->running = false;
                     break;
                 }
+                std::this_thread::sleep_for(std::chrono::microseconds(9500)); // ~100 FPS paced
             }
         } else if (_this->formatType == FORMAT_RAW_FLOAT32) {
             while (_this->running) {
@@ -269,6 +288,7 @@ private:
                     _this->running = false;
                     break;
                 }
+                std::this_thread::sleep_for(std::chrono::microseconds(9500));
             }
         } else {
             // Standard 16-bit WAV / Int16
@@ -281,6 +301,7 @@ private:
                     _this->running = false;
                     break;
                 }
+                std::this_thread::sleep_for(std::chrono::microseconds(9500));
             }
         }
     }
@@ -294,6 +315,7 @@ private:
         return std::atof(freqStr.substr(0, freqStr.size() - 2).c_str());
     }
 
+public:
     FileSelect fileSelect;
     std::string name;
     dsp::stream<dsp::complex_t> stream;
@@ -330,4 +352,13 @@ MOD_EXPORT void _DELETE_INSTANCE_(void* instance) {
 MOD_EXPORT void _END_() {
     config.disableAutoSave();
     config.save();
+}
+
+extern "C" {
+    MOD_EXPORT void file_source_set_path(const char* path, bool loop) {
+        if (FileSourceModule::instance && path) {
+            FileSourceModule::instance->loadFile(path);
+            FileSourceModule::instance->loopMode = loop;
+        }
+    }
 }
