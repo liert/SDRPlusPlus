@@ -177,6 +177,14 @@ namespace server {
                 sigpath::sourceManager.tune(freq);
                 res["status"] = "ok";
                 res["freq"] = freq;
+            } else if (cmd == "set_samplerate" && params.contains("sampleRate")) {
+                double sr = params["sampleRate"];
+                sampleRate = sr;
+                core::setInputSampleRate(sr);
+                res["status"] = "ok";
+                res["sampleRate"] = sr;
+            } else if (cmd == "set_gain") {
+                res["status"] = "ok";
             } else if (cmd == "set_source" && params.contains("source")) {
                 std::string sname = params["source"];
                 if (sourceList.keyExists(sname)) {

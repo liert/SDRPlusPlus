@@ -20,6 +20,8 @@ import {
   hasLiveHackRfData
 } from './useHackRf'
 
+export { hasLiveHackRfData } from './useHackRf'
+
 export const isPlaying = ref(false)
 export const fps = ref(60)
 export const totalPacketsCount = ref(0)
@@ -113,6 +115,11 @@ export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
       isBackendConnected.value = true
       backendStatusText.value = '⚡ C++ 后端已连接 (高性能 DSP 流)'
       console.log('Connected to SDR++ C++ Backend Engine over WebSocket')
+      const sname = sourceConfig.type === 'hackrf' ? 'HackRF' : (sourceConfig.type === 'file' ? 'File Source' : 'RTL-SDR')
+      sendBackendCommand('set_source', { source: sname })
+      sendBackendCommand('set_freq', { freq: sourceConfig.centerFreqHz })
+      sendBackendCommand('set_samplerate', { sampleRate: sourceConfig.sampleRateHz })
+      sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: sourceConfig.vgaGain, amp: sourceConfig.ampEnable, biasT: sourceConfig.biasT })
       sendBackendCommand('get_status')
     }
 

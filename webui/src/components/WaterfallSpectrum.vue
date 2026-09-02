@@ -5,7 +5,9 @@ import {
   sourceConfig,
   vfo,
   spectrumSettings,
-  currentLang
+  currentLang,
+  isBackendConnected,
+  hasLiveHackRfData
 } from '@/composables/useSdrEngine'
 import { hackrfInfo, liveHackRfFft } from '@/composables/useHackRf'
 import { generateColormapLut } from '@/composables/useColormaps'
@@ -70,8 +72,8 @@ function updateSimulatedFft(time: number) {
   const minDb = spectrumSettings.minDb
   const maxDb = spectrumSettings.maxDb
 
-  // Case 1: HackRF One Live WebUSB Streaming
-  if (sourceConfig.type === 'hackrf' && hackrfInfo.isStreaming) {
+  // Case 1: Live Streaming from C++ Backend WebSocket or WebUSB
+  if (hasLiveHackRfData.value || (sourceConfig.type === 'hackrf' && (hackrfInfo.isStreaming || isBackendConnected.value))) {
     for (let i = 0; i < fftSize; i++) {
       const liveVal = liveHackRfFft[i]
       const alpha = 1.0 - spectrumSettings.smoothing
@@ -86,7 +88,7 @@ function updateSimulatedFft(time: number) {
     return
   }
 
-  // Case 2: Generated spectrum based on active source mode
+  // Case 2: Generated spectrum dynamically based on active source mode and center frequency
   for (let i = 0; i < fftSize; i++) {
     const freqRel = (i / fftSize - 0.5) * sourceConfig.sampleRateHz
     let noise = minDb + Math.random() * 8.0 - 5.0
@@ -97,30 +99,44 @@ function updateSimulatedFft(time: number) {
       noise = minDb + gainOffset + (Math.random() * 6.0 - 3.0)
 
       if (isPlaying.value) {
-        // Center DC spike characteristic of direct-conversion SDRs
+        // Direct conversion DC center spike
         const distDC = Math.abs(freqRel)
         if (distDC < 50000) {
           noise += (1 - distDC / 50000) * 18.0
+        }
+
+        // Dynamic RF signals relative to tuned center frequency
+        const targetFreq1 = 2401400000 // 2401.4 MHz (H12 channel 1)
+        const targetFreq2 = 2398400000 // 2398.4 MHz (H12 channel 2)
+        const currFreq = sourceConfig.centerFreqHz + freqRel
+
+        const dist1 = Math.abs(currFreq - targetFreq1)
+        if (dist1 < 600000) {
+          const shape = Math.cos((dist1 / 600000) * (Math.PI / 2))
+          noise += shape * 60.0 * (0.85 + Math.sin(time * 8 + i * 0.05) * 0.15)
+        }
+
+        const dist2 = Math.abs(currFreq - targetFreq2)
+        if (dist2 < 600000) {
+          const shape = Math.cos((dist2 / 600000) * (Math.PI / 2))
+          noise += shape * 54.0 * (0.8 + Math.cos(time * 6 + i * 0.04) * 0.2)
         }
       }
     } else if (sourceConfig.type === 'file') {
       // File Source: H12 signal bursts recorded in fresh_pairing_2400_8.iq
       if (isPlaying.value) {
-        // Signal burst 1 at +1.40 MHz (H12 channel)
         const dist1 = Math.abs(freqRel - 1400000)
         if (dist1 < 650000) {
           const shape = Math.cos((dist1 / 650000) * (Math.PI / 2))
           noise += shape * 62.0 * (0.85 + Math.sin(time * 8 + i * 0.05) * 0.15)
         }
 
-        // Signal burst 2 at -1.60 MHz (H12 channel)
         const dist2 = Math.abs(freqRel - (-1600000))
         if (dist2 < 650000) {
           const shape = Math.cos((dist2 / 650000) * (Math.PI / 2))
           noise += shape * 55.0 * (0.8 + Math.cos(time * 6 + i * 0.04) * 0.2)
         }
 
-        // Central DC spike
         const distDC = Math.abs(freqRel)
         if (distDC < 50000) {
           noise += (1 - distDC / 50000) * 20.0
@@ -128,27 +144,23 @@ function updateSimulatedFft(time: number) {
       }
     } else if (sourceConfig.type === 'simulator') {
       if (isPlaying.value) {
-        // Synthetic carrier test tone at 0 Hz
         const distCenter = Math.abs(freqRel)
         if (distCenter < 100000) {
           noise += (1 - distCenter / 100000) * 55.0
         }
       }
     } else {
-      // Generic hardware mode
       const gainOffset = (sourceConfig.lnaGain / 40.0) * 12.0 + (sourceConfig.vgaGain / 62.0) * 8.0
       noise = minDb + gainOffset + (Math.random() * 5.0 - 2.5)
     }
 
-    // Exponential smoothing
     const alpha = 1.0 - spectrumSettings.smoothing
     currentFft[i] = currentFft[i] * (1 - alpha) + noise * alpha
 
-    // Peak hold
     if (currentFft[i] > peakFft[i]) {
       peakFft[i] = currentFft[i]
     } else {
-      peakFft[i] -= 0.15 // Peak decay
+      peakFft[i] -= 0.15
     }
   }
 }
@@ -257,10 +269,8 @@ function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: n
 
   // 1. Only advance buffer when actually playing
   if (isPlaying.value) {
-    // Shift offscreen canvas down by 1 pixel
     offscreenCtx.drawImage(offscreenCanvas, 0, 0, width, height - 1, 0, 1, width, height - 1)
 
-    // Generate new 1-pixel row
     const rowImg = offscreenCtx.createImageData(width, 1)
     const minDb = spectrumSettings.minDb
     const maxDb = spectrumSettings.maxDb
@@ -317,7 +327,6 @@ function loop(t: number) {
     if (ctx) renderSpectrum(ctx, spectrumCanvas.value.width, spectrumCanvas.value.height)
   }
 
-  // Always redraw waterfall overlay so VFO moves smoothly whether playing or stopped!
   if (waterfallCanvas.value) {
     const ctx = waterfallCanvas.value.getContext('2d')
     if (ctx) renderWaterfall(ctx, waterfallCanvas.value.width, waterfallCanvas.value.height)
@@ -341,7 +350,6 @@ function onCanvasMouseDown(e: MouseEvent, targetCanvas: HTMLCanvasElement | null
     dragStartX = e.clientX
     initialOffsetHz = vfo.offsetHz
   } else {
-    // Click to tune directly to cursor position
     const freqRatio = x / width - 0.5
     vfo.offsetHz = Math.round(freqRatio * sourceConfig.sampleRateHz)
     isDraggingVfo.value = true
@@ -361,7 +369,6 @@ function onGlobalMouseUp() {
   isDraggingVfo.value = false
 }
 
-// Mouse Wheel on Canvas to adjust VFO bandwidth
 function onWheel(e: WheelEvent) {
   e.preventDefault()
   const delta = e.deltaY < 0 ? 100000 : -100000
