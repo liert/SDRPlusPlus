@@ -22,9 +22,12 @@ const containerRef = ref<HTMLDivElement | null>(null)
 let animFrameId: number | null = null
 let colormapLut = generateColormapLut(spectrumSettings.colormap)
 
-// Offline waterfall buffer for smooth scrolling
-let offscreenCanvas: HTMLCanvasElement | null = null
-let offscreenCtx: CanvasRenderingContext2D | null = null
+// Offline double-buffer waterfall canvases for smooth 60 FPS GPU scrolling
+let canvasA: HTMLCanvasElement | null = null
+let canvasB: HTMLCanvasElement | null = null
+let ctxA: CanvasRenderingContext2D | null = null
+let ctxB: CanvasRenderingContext2D | null = null
+let activeWaterfallIdx = 0
 
 // Preallocated single row buffer to eliminate garbage collection lag
 let cachedRowImg: ImageData | null = null
@@ -56,8 +59,8 @@ function getRowImageData(ctx: CanvasRenderingContext2D, width: number): ImageDat
 function handleResize() {
   if (!containerRef.value || !spectrumCanvas.value || !waterfallCanvas.value) return
   const rect = containerRef.value.getBoundingClientRect()
-  const w = Math.floor(rect.width)
-  const h = Math.floor(rect.height)
+  const w = Math.max(100, Math.floor(rect.width))
+  const h = Math.max(100, Math.floor(rect.height))
   activeCanvasWidth = w
 
   const specH = Math.floor(h * 0.38)
@@ -69,18 +72,19 @@ function handleResize() {
   waterfallCanvas.value.width = w
   waterfallCanvas.value.height = wtfH
 
-  if (!offscreenCanvas) {
-    offscreenCanvas = document.createElement('canvas')
-  }
-  offscreenCanvas.width = w
-  offscreenCanvas.height = wtfH
-  offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true })
+  if (!canvasA) canvasA = document.createElement('canvas')
+  if (!canvasB) canvasB = document.createElement('canvas')
 
-  // Fill offscreen initial background
-  if (offscreenCtx) {
-    offscreenCtx.fillStyle = '#090b10'
-    offscreenCtx.fillRect(0, 0, w, wtfH)
-  }
+  canvasA.width = w
+  canvasA.height = wtfH
+  canvasB.width = w
+  canvasB.height = wtfH
+
+  ctxA = canvasA.getContext('2d', { willReadFrequently: true })
+  ctxB = canvasB.getContext('2d', { willReadFrequently: true })
+
+  if (ctxA) { ctxA.fillStyle = '#090b10'; ctxA.fillRect(0, 0, w, wtfH); }
+  if (ctxB) { ctxB.fillStyle = '#090b10'; ctxB.fillRect(0, 0, w, wtfH); }
 }
 
 function updateSimulatedFft(time: number) {
@@ -235,17 +239,22 @@ function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: nu
 }
 
 function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: number) {
-  if (!offscreenCanvas || !offscreenCtx) return
+  if (!canvasA || !canvasB || !ctxA || !ctxB) return
+
+  const srcCanvas = activeWaterfallIdx === 0 ? canvasA : canvasB
+  const dstCanvas = activeWaterfallIdx === 0 ? canvasB : canvasA
+  const dstCtx = activeWaterfallIdx === 0 ? ctxB : ctxA
 
   if (renderLogCounter % 180 === 1) {
-    logUi(`[Canvas Waterfall] w=${width}, h=${height}, offscreenW=${offscreenCanvas.width}, offscreenH=${offscreenCanvas.height}`)
+    logUi(`[Canvas Waterfall] w=${width}, h=${height}, isPlaying=${isPlaying.value}, hasData=${hasLiveHackRfData.value}, activeIdx=${activeWaterfallIdx}`)
   }
 
   // 1. Advance waterfall buffer smoothly ONLY when streaming
   if (isPlaying.value && hasLiveHackRfData.value) {
-    offscreenCtx.drawImage(offscreenCanvas, 0, 0, width, height - 1, 0, 1, width, height - 1)
+    // Blit from srcCanvas to dstCanvas with 1px downward shift (100% valid GPU texture copy)
+    dstCtx.drawImage(srcCanvas, 0, 0, width, height - 1, 0, 1, width, height - 1)
 
-    const rowImg = getRowImageData(offscreenCtx, width)
+    const rowImg = getRowImageData(dstCtx, width)
     const minDb = spectrumSettings.minDb
     const maxDb = spectrumSettings.maxDb
     const dbRange = maxDb - minDb
@@ -264,12 +273,14 @@ function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: n
       data[px + 3] = 255
     }
 
-    offscreenCtx.putImageData(rowImg, 0, 0)
+    dstCtx.putImageData(rowImg, 0, 0)
+    activeWaterfallIdx = 1 - activeWaterfallIdx
   }
 
-  // 2. Clear visible canvas and draw current waterfall image
+  // 2. Draw active waterfall image to visible screen
+  const currentRenderCanvas = (isPlaying.value && hasLiveHackRfData.value) ? dstCanvas : srcCanvas
   ctx.clearRect(0, 0, width, height)
-  ctx.drawImage(offscreenCanvas, 0, 0)
+  ctx.drawImage(currentRenderCanvas, 0, 0)
 
   // 3. Always draw updated VFO highlight overlay (synced with spectrum at all times!)
   const vfoCenterX = width * (0.5 + vfo.offsetHz / sourceConfig.sampleRateHz)
