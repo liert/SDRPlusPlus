@@ -269,7 +269,7 @@ function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: n
   if (!offscreenCanvas || !offscreenCtx) return
 
   // 1. Advance waterfall buffer smoothly
-  if (isPlaying.value || (isBackendConnected.value && hasLiveHackRfData.value)) {
+  if (isPlaying.value || isBackendConnected.value || hasLiveHackRfData.value) {
     offscreenCtx.drawImage(offscreenCanvas, 0, 0, width, height - 1, 0, 1, width, height - 1)
 
     const rowImg = getRowImageData(offscreenCtx, width)

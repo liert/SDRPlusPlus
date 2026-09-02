@@ -44,6 +44,9 @@ void SourceManager::selectSource(std::string name) {
         flog::error("Tried to select non existent source: {0}", name);
         return;
     }
+    if (name == selectedName && selectedHandler != NULL) {
+        return;
+    }
     if (selectedHandler != NULL) {
         sources[selectedName]->deselectHandler(sources[selectedName]->ctx);
     }

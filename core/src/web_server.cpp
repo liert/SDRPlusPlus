@@ -144,11 +144,14 @@ namespace web_server {
         }
     }
 
-    // === Server State & Client Connections ===
+    // === Thread-Safe Client Connection Model ===
     struct WsClient {
         SOCKET sock;
-        bool isWebSocket;
+        std::atomic<bool> isWebSocket;
         std::string rxBuffer;
+        std::mutex sendMtx;
+
+        WsClient(SOCKET s = INVALID_SOCKET) : sock(s), isWebSocket(false) {}
     };
 
     static std::atomic<bool> serverRunning(false);
@@ -188,10 +191,16 @@ namespace web_server {
         if (fftwOut) { fftwf_free(fftwOut); fftwOut = nullptr; }
     }
 
-    // === WebSocket Frame Transmission Helpers ===
-    static void sendWsFrame(SOCKET sock, uint8_t opcode, const uint8_t* payload, size_t len) {
+    // === Atomic, Thread-Safe WebSocket Frame Transmission ===
+    static bool sendWsFrame(std::shared_ptr<WsClient> client, uint8_t opcode, const uint8_t* payload, size_t len) {
+        if (!client || client->sock == INVALID_SOCKET) return false;
+
+        std::lock_guard<std::mutex> lock(client->sendMtx);
+        if (client->sock == INVALID_SOCKET) return false;
+
         std::vector<uint8_t> frame;
-        frame.push_back(0x80 | opcode); // FIN + Opcode
+        frame.reserve(10 + len);
+        frame.push_back(0x80 | (opcode & 0x0F)); // FIN + Opcode
 
         if (len <= 125) {
             frame.push_back((uint8_t)len);
@@ -210,37 +219,71 @@ namespace web_server {
 
         int total = (int)frame.size();
         int sent = 0;
-        while (sent < total) {
-            int r = send(sock, (const char*)frame.data() + sent, total - sent, 0);
-            if (r <= 0) break;
-            sent += r;
+        int retries = 0;
+        while (sent < total && client->sock != INVALID_SOCKET) {
+            int r = send(client->sock, (const char*)frame.data() + sent, total - sent, 0);
+            if (r > 0) {
+                sent += r;
+                retries = 0;
+            } else if (r == SOCKET_ERROR) {
+#ifdef _WIN32
+                int err = WSAGetLastError();
+                if (err == WSAEWOULDBLOCK || err == WSAEINTR) {
+                    if (++retries > 60) { // ~30ms timeout
+                        closesocket(client->sock);
+                        client->sock = INVALID_SOCKET;
+                        return false;
+                    }
+                    std::this_thread::sleep_for(std::chrono::microseconds(500));
+                    continue;
+                }
+#else
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                    if (++retries > 60) {
+                        closesocket(client->sock);
+                        client->sock = INVALID_SOCKET;
+                        return false;
+                    }
+                    std::this_thread::sleep_for(std::chrono::microseconds(500));
+                    continue;
+                }
+#endif
+                closesocket(client->sock);
+                client->sock = INVALID_SOCKET;
+                return false;
+            } else {
+                closesocket(client->sock);
+                client->sock = INVALID_SOCKET;
+                return false;
+            }
         }
+        return (sent == total);
     }
 
     void broadcastFft(const float* fftDb, int size) {
         if (!fftDb || size <= 0) return;
-        std::lock_guard<std::mutex> lock(clientsMutex);
-        for (auto it = clients.begin(); it != clients.end();) {
-            auto client = *it;
-            if (client->isWebSocket && client->sock != INVALID_SOCKET) {
-                sendWsFrame(client->sock, 0x02, (const uint8_t*)fftDb, size * sizeof(float));
-                ++it;
-            } else {
-                ++it;
+        std::vector<std::shared_ptr<WsClient>> clientList;
+        {
+            std::lock_guard<std::mutex> lock(clientsMutex);
+            clientList = clients;
+        }
+        for (auto& client : clientList) {
+            if (client->isWebSocket.load() && client->sock != INVALID_SOCKET) {
+                sendWsFrame(client, 0x02, (const uint8_t*)fftDb, size * sizeof(float));
             }
         }
     }
 
     void broadcastPacket(const nlohmann::json& packet) {
         std::string jsonStr = packet.dump();
-        std::lock_guard<std::mutex> lock(clientsMutex);
-        for (auto it = clients.begin(); it != clients.end();) {
-            auto client = *it;
-            if (client->isWebSocket && client->sock != INVALID_SOCKET) {
-                sendWsFrame(client->sock, 0x01, (const uint8_t*)jsonStr.data(), jsonStr.size());
-                ++it;
-            } else {
-                ++it;
+        std::vector<std::shared_ptr<WsClient>> clientList;
+        {
+            std::lock_guard<std::mutex> lock(clientsMutex);
+            clientList = clients;
+        }
+        for (auto& client : clientList) {
+            if (client->isWebSocket.load() && client->sock != INVALID_SOCKET) {
+                sendWsFrame(client, 0x01, (const uint8_t*)jsonStr.data(), jsonStr.size());
             }
         }
     }
@@ -248,10 +291,10 @@ namespace web_server {
     void processIqSamples(const dsp::complex_t* samples, int count, double sampleRate) {
         if (!samples || count < FFT_SIZE || !fftPlan) return;
 
-        // Rate limit FFT calculation to ~35 FPS
+        // Rate limit FFT calculation to ~30 FPS
         auto now = std::chrono::steady_clock::now();
         auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFftTime).count();
-        if (elapsedMs < 28) return;
+        if (elapsedMs < 30) return;
         lastFftTime = now;
 
         std::unique_lock<std::mutex> lock(fftMutex, std::try_to_lock);
@@ -289,6 +332,7 @@ namespace web_server {
         st["source"] = sigpath::sourceManager.getSelectedSource();
         st["sampleRate"] = 8000000.0;
         st["centerFreq"] = 2400000000.0;
+        std::lock_guard<std::mutex> lock(clientsMutex);
         st["activeClients"] = clients.size();
         return st;
     }
@@ -301,7 +345,7 @@ namespace web_server {
     static void handleIncomingData(std::shared_ptr<WsClient> client, const char* data, int len) {
         client->rxBuffer.append(data, len);
 
-        if (!client->isWebSocket) {
+        if (!client->isWebSocket.load()) {
             // Check for HTTP Request End
             size_t headerEnd = client->rxBuffer.find("\r\n\r\n");
             if (headerEnd == std::string::npos) return;
@@ -327,8 +371,11 @@ namespace web_server {
                              << "Sec-WebSocket-Accept: " << acceptKey << "\r\n\r\n";
 
                     std::string respStr = response.str();
-                    send(client->sock, respStr.c_str(), (int)respStr.size(), 0);
-                    client->isWebSocket = true;
+                    {
+                        std::lock_guard<std::mutex> lock(client->sendMtx);
+                        send(client->sock, respStr.c_str(), (int)respStr.size(), 0);
+                    }
+                    client->isWebSocket.store(true);
                     flog::info("WebUI WebSocket Client Connected successfully.");
 
                     // Send initial status JSON frame
@@ -337,7 +384,7 @@ namespace web_server {
                     else initMsg = getStatusJson();
                     initMsg["type"] = "status";
                     std::string initStr = initMsg.dump();
-                    sendWsFrame(client->sock, 0x01, (const uint8_t*)initStr.data(), initStr.size());
+                    sendWsFrame(client, 0x01, (const uint8_t*)initStr.data(), initStr.size());
                     return;
                 }
             }
@@ -389,7 +436,10 @@ namespace web_server {
             }
 
             std::string respStr = httpResp.str();
-            send(client->sock, respStr.c_str(), (int)respStr.size(), 0);
+            {
+                std::lock_guard<std::mutex> lock(client->sendMtx);
+                send(client->sock, respStr.c_str(), (int)respStr.size(), 0);
+            }
         } else {
             // Process WebSocket Frames from Client
             while (client->rxBuffer.size() >= 2) {
@@ -435,7 +485,7 @@ namespace web_server {
                     client->sock = INVALID_SOCKET;
                     break;
                 } else if (opcode == 0x09) {
-                    sendWsFrame(client->sock, 0x0A, (const uint8_t*)payload.data(), payload.size());
+                    sendWsFrame(client, 0x0A, (const uint8_t*)payload.data(), payload.size());
                 } else if (opcode == 0x01) {
                     // JSON command from WebUI
                     try {
@@ -454,7 +504,7 @@ namespace web_server {
                         }
 
                         std::string respStr = resp.dump();
-                        sendWsFrame(client->sock, 0x01, (const uint8_t*)respStr.data(), respStr.size());
+                        sendWsFrame(client, 0x01, (const uint8_t*)respStr.data(), respStr.size());
                     } catch (const std::exception& e) {
                         flog::warn("Invalid WebUI JSON command: {0}", e.what());
                     }
@@ -532,9 +582,7 @@ namespace web_server {
                     int sndbuf = 262144;
                     setsockopt(clientSock, SOL_SOCKET, SO_SNDBUF, (const char*)&sndbuf, sizeof(sndbuf));
 
-                    auto newClient = std::make_shared<WsClient>();
-                    newClient->sock = clientSock;
-                    newClient->isWebSocket = false;
+                    auto newClient = std::make_shared<WsClient>(clientSock);
                     std::lock_guard<std::mutex> lock(clientsMutex);
                     clients.push_back(newClient);
                 }
