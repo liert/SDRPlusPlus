@@ -193,6 +193,24 @@ impl ShmManager {
         !self.header_ptr.is_null()
     }
 
+    pub fn read_fft_f32(&mut self) -> Option<Vec<f32>> {
+        if !self.try_connect() || self.header_ptr.is_null() {
+            return None;
+        }
+
+        unsafe {
+            let hdr = &*self.header_ptr;
+            if hdr.magic != 0x53445250 {
+                return None;
+            }
+            let slice = std::slice::from_raw_parts(
+                hdr.fft_data.as_ptr(),
+                1024,
+            );
+            Some(slice.to_vec())
+        }
+    }
+
     pub fn read_fft_raw(&mut self) -> Option<Vec<u8>> {
         if !self.try_connect() || self.header_ptr.is_null() {
             return None;

@@ -56,17 +56,17 @@ fn spawn_backend() -> bool {
 }
 
 #[tauri::command]
-fn get_shm_fft() -> tauri::ipc::Response {
+fn get_shm_fft() -> Vec<f32> {
     let mut lock = GLOBAL_SHM.lock().unwrap();
     if lock.is_none() {
         *lock = Some(ShmManager::new());
     }
     if let Some(mgr) = lock.as_mut() {
-        if let Some(bytes) = mgr.read_fft_raw() {
-            return tauri::ipc::Response::new(bytes);
+        if let Some(vec) = mgr.read_fft_f32() {
+            return vec;
         }
     }
-    tauri::ipc::Response::new(Vec::new())
+    Vec::new()
 }
 
 #[tauri::command]

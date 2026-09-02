@@ -108,10 +108,9 @@ export function initShmEngine() {
     if (isPolling) return
     isPolling = true
     try {
-      const res = await invoke<ArrayBuffer>('get_shm_fft')
-      if (res && res.byteLength === 4096) {
-        const floats = new Float32Array(res)
-        liveHackRfFft.set(floats)
+      const res = await invoke<number[]>('get_shm_fft')
+      if (res && res.length === 1024) {
+        liveHackRfFft.set(res)
         if (!hasLiveHackRfData.value) {
           hasLiveHackRfData.value = true
         }
