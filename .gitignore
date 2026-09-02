@@ -1,4 +1,5 @@
 build/
+sdrpp_bin/
 .vscode/
 .vs/
 .idea/

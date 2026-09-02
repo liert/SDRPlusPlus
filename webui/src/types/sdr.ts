@@ -6,6 +6,23 @@ export type ModulationType = 'FLRC' | '2FSK' | 'GFSK' | 'CPFSK' | '4FSK' | 'OOK'
 
 export type MaskMode = 'auto' | '0x99' | '0x66' | 'none' | 'custom'
 
+export type HackRfDeviceStatus = 'disconnected' | 'connecting' | 'connected' | 'streaming' | 'error'
+
+export interface HackRfDeviceInfo {
+  isSupported: boolean
+  isConnected: boolean
+  isStreaming: boolean
+  status: HackRfDeviceStatus
+  deviceName: string
+  serialNumber: string
+  version: string
+  boardName: string
+  boardId: number
+  rxBytesTotal: number
+  rxRateMBps: number
+  error: string | null
+}
+
 export interface VfoState {
   id: string
   name: string

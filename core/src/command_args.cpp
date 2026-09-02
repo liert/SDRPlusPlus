@@ -16,7 +16,7 @@ void CommandArgsParser::defineAll() {
         define('a', "addr", "Server mode address", "0.0.0.0");
         define('h', "help", "Show help");
         define('p', "port", "Server mode port", 5259);
-        define('r', "root", "Root directory, where all config files are stored", std::filesystem::absolute(root).string());
+        define('r', "root", "Root directory, where all config files are stored", root);
         define('s', "server", "Run in server mode");
         define('\0', "autostart", "Automatically start the SDR after loading");
 }

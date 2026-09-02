@@ -14,7 +14,7 @@ file(GLOB_RECURSE SRC "src/*.cpp" "src/*.c")
 
 add_definitions(-DSDRPP_IS_CORE)
 add_definitions(-DFLOG_ANDROID_TAG="SDR++")
-if (MSVC)
+if (WIN32)
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif ()
 
@@ -156,6 +156,13 @@ else()
         target_link_directories(sdrpp_core PUBLIC ${CORRECT_LIBRARY_DIRS})
         target_link_libraries(sdrpp_core PUBLIC ${CORRECT_LIBRARIES})
     endif (NOT USE_INTERNAL_LIBCORRECT)
+
+    if (WIN32)
+        target_link_libraries(sdrpp_core PUBLIC ws2_32 wsock32 iphlpapi)
+        if (NOT MSVC)
+            target_link_options(sdrpp_core PUBLIC "-Wl,--export-all-symbols")
+        endif ()
+    endif ()
 
     if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
         target_link_libraries(sdrpp_core PUBLIC stdc++fs)

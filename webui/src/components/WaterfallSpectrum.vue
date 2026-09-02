@@ -7,6 +7,7 @@ import {
   spectrumSettings,
   currentLang
 } from '@/composables/useSdrEngine'
+import { hackrfInfo, liveHackRfFft } from '@/composables/useHackRf'
 import { generateColormapLut } from '@/composables/useColormaps'
 
 const spectrumCanvas = ref<HTMLCanvasElement | null>(null)
@@ -20,7 +21,7 @@ let colormapLut = generateColormapLut(spectrumSettings.colormap)
 let offscreenCanvas: HTMLCanvasElement | null = null
 let offscreenCtx: CanvasRenderingContext2D | null = null
 
-// Simulated FFT power spectrum (1024 bins)
+// Simulated / Live FFT power spectrum (1024 bins)
 const fftSize = 1024
 const currentFft = new Float32Array(fftSize)
 const peakFft = new Float32Array(fftSize).fill(-120)
@@ -69,32 +70,74 @@ function updateSimulatedFft(time: number) {
   const minDb = spectrumSettings.minDb
   const maxDb = spectrumSettings.maxDb
 
-  // Center frequency is normalized around 0
+  // Case 1: HackRF One Live WebUSB Streaming
+  if (sourceConfig.type === 'hackrf' && hackrfInfo.isStreaming) {
+    for (let i = 0; i < fftSize; i++) {
+      const liveVal = liveHackRfFft[i]
+      const alpha = 1.0 - spectrumSettings.smoothing
+      currentFft[i] = currentFft[i] * (1 - alpha) + liveVal * alpha
+
+      if (currentFft[i] > peakFft[i]) {
+        peakFft[i] = currentFft[i]
+      } else {
+        peakFft[i] -= 0.15
+      }
+    }
+    return
+  }
+
+  // Case 2: Generated spectrum based on active source mode
   for (let i = 0; i < fftSize; i++) {
     const freqRel = (i / fftSize - 0.5) * sourceConfig.sampleRateHz
-    // Base noise floor around -105 dBm
     let noise = minDb + Math.random() * 8.0 - 5.0
 
-    if (isPlaying.value) {
-      // Signal burst 1 at +1.40 MHz (H12 channel)
-      const dist1 = Math.abs(freqRel - 1400000)
-      if (dist1 < 650000) {
-        const shape = Math.cos((dist1 / 650000) * (Math.PI / 2))
-        noise += shape * 62.0 * (0.85 + Math.sin(time * 8 + i * 0.05) * 0.15)
-      }
+    if (sourceConfig.type === 'hackrf') {
+      // HackRF hardware noise model: Gain controls dynamically lift the noise floor
+      const gainOffset = (sourceConfig.lnaGain / 40.0) * 16.0 + (sourceConfig.vgaGain / 62.0) * 12.0 + (sourceConfig.ampEnable ? 14.0 : 0.0)
+      noise = minDb + gainOffset + (Math.random() * 6.0 - 3.0)
 
-      // Signal burst 2 at -1.60 MHz (H12 channel)
-      const dist2 = Math.abs(freqRel - (-1600000))
-      if (dist2 < 650000) {
-        const shape = Math.cos((dist2 / 650000) * (Math.PI / 2))
-        noise += shape * 55.0 * (0.8 + Math.cos(time * 6 + i * 0.04) * 0.2)
+      if (isPlaying.value) {
+        // Center DC spike characteristic of direct-conversion SDRs
+        const distDC = Math.abs(freqRel)
+        if (distDC < 50000) {
+          noise += (1 - distDC / 50000) * 18.0
+        }
       }
+    } else if (sourceConfig.type === 'file') {
+      // File Source: H12 signal bursts recorded in fresh_pairing_2400_8.iq
+      if (isPlaying.value) {
+        // Signal burst 1 at +1.40 MHz (H12 channel)
+        const dist1 = Math.abs(freqRel - 1400000)
+        if (dist1 < 650000) {
+          const shape = Math.cos((dist1 / 650000) * (Math.PI / 2))
+          noise += shape * 62.0 * (0.85 + Math.sin(time * 8 + i * 0.05) * 0.15)
+        }
 
-      // Central DC spike
-      const distDC = Math.abs(freqRel)
-      if (distDC < 50000) {
-        noise += (1 - distDC / 50000) * 20.0
+        // Signal burst 2 at -1.60 MHz (H12 channel)
+        const dist2 = Math.abs(freqRel - (-1600000))
+        if (dist2 < 650000) {
+          const shape = Math.cos((dist2 / 650000) * (Math.PI / 2))
+          noise += shape * 55.0 * (0.8 + Math.cos(time * 6 + i * 0.04) * 0.2)
+        }
+
+        // Central DC spike
+        const distDC = Math.abs(freqRel)
+        if (distDC < 50000) {
+          noise += (1 - distDC / 50000) * 20.0
+        }
       }
+    } else if (sourceConfig.type === 'simulator') {
+      if (isPlaying.value) {
+        // Synthetic carrier test tone at 0 Hz
+        const distCenter = Math.abs(freqRel)
+        if (distCenter < 100000) {
+          noise += (1 - distCenter / 100000) * 55.0
+        }
+      }
+    } else {
+      // Generic hardware mode
+      const gainOffset = (sourceConfig.lnaGain / 40.0) * 12.0 + (sourceConfig.vgaGain / 62.0) * 8.0
+      noise = minDb + gainOffset + (Math.random() * 5.0 - 2.5)
     }
 
     // Exponential smoothing

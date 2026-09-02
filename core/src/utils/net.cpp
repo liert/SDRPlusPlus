@@ -273,12 +273,19 @@ namespace net {
         if (GetAdaptersAddresses(AF_INET, 0, NULL, addresses, &size) == ERROR_BUFFER_OVERFLOW) {
             addresses = (PIP_ADAPTER_ADDRESSES)realloc(addresses, size);
             if (GetAdaptersAddresses(AF_INET, 0, NULL, addresses, &size)) {
-                throw std::exception("Could not list network interfaces");
+                throw std::runtime_error("Could not list network interfaces");
             }
         }
 
         // Save data
-        std::wstring_convert<std::codecvt_utf8<wchar_t>> utfConv;
+        auto wideToUtf8 = [](const wchar_t* wstr) -> std::string {
+            if (!wstr) return "";
+            int len = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, NULL, 0, NULL, NULL);
+            if (len <= 0) return "";
+            std::string str(len - 1, 0);
+            WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &str[0], len, NULL, NULL);
+            return str;
+        };
         for (auto iface = addresses; iface; iface = iface->Next) {
             InterfaceInfo info;
             auto ip = iface->FirstUnicastAddress;
@@ -286,7 +293,7 @@ namespace net {
             info.address = ntohl(*(uint32_t*)&ip->Address.lpSockaddr->sa_data[2]);
             info.netmask = ~((1 << (32 - ip->OnLinkPrefixLength)) - 1);
             info.broadcast = info.address | (~info.netmask);
-            ifaces[utfConv.to_bytes(iface->FriendlyName)] = info;
+            ifaces[wideToUtf8(iface->FriendlyName)] = info;
         }
         
         // Free tables

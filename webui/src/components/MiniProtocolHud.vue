@@ -8,7 +8,8 @@ import {
   currentLang,
   isVfoLockedOnSignal,
   checkVfoSignalLock,
-  isPlaying
+  isPlaying,
+  sourceConfig
 } from '@/composables/useSdrEngine'
 import { ChevronRight, ChevronLeft, Activity, ShieldCheck, Maximize2, Zap, Radio, AlertTriangle } from 'lucide-vue-next'
 
@@ -92,8 +93,11 @@ const isCollapsed = ref(false)
             <AlertTriangle class="w-4 h-4 text-amber-400" />
             <span>VFO 偏离信号通带</span>
           </div>
-          <p class="text-[11px] text-slate-300 leading-relaxed">
+          <p v-if="sourceConfig.type === 'file'" class="text-[11px] text-slate-300 leading-relaxed">
             当前 VFO 滤波窗口位于底噪区（无载波能量），解调器已停止输出。请在瀑布图上将 VFO 框拖动到 <b>+1.40 MHz</b> 或 <b>-1.60 MHz</b> 信号峰处！
+          </p>
+          <p v-else class="text-[11px] text-slate-300 leading-relaxed">
+            当前 VFO 滤波窗口位于底噪区（无载波能量），解调器已停止输出。请在瀑布图上将 VFO 框对准空中实际信号峰或中心载波！
           </p>
         </div>
 

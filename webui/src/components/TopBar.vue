@@ -9,6 +9,7 @@ import {
   crcSuccessRate,
   fps
 } from '@/composables/useSdrEngine'
+import { hackrfInfo } from '@/composables/useHackRf'
 import {
   Play,
   Square,
@@ -17,7 +18,8 @@ import {
   Globe,
   Cpu,
   Layers,
-  Maximize2
+  Maximize2,
+  Usb
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -55,11 +57,17 @@ function formatFreq(freqHz: number): string {
 
       <!-- Source Status Badge -->
       <div class="hidden sm:flex items-center gap-2 bg-sdr-dark/80 border border-sdr-border px-2.5 py-1 rounded text-xs font-mono">
-        <Radio class="w-3.5 h-3.5 text-cyan-400" />
+        <component :is="sourceConfig.type === 'hackrf' ? Usb : Radio" class="w-3.5 h-3.5 text-cyan-400" />
         <span class="text-slate-400 font-sans">源:</span>
         <b class="text-slate-200 uppercase">{{ sourceConfig.type }}</b>
         <span class="text-slate-500">|</span>
         <span class="text-emerald-400">{{ (sourceConfig.sampleRateHz / 1e6).toFixed(3) }} MSPS</span>
+        <template v-if="sourceConfig.type === 'hackrf'">
+          <span class="text-slate-500">|</span>
+          <span :class="hackrfInfo.isConnected ? 'text-cyan-400 font-bold' : 'text-slate-500'">
+            {{ hackrfInfo.isConnected ? (hackrfInfo.isStreaming ? '● USB 采集中' : '● USB 已连接') : '○ USB 未连接' }}
+          </span>
+        </template>
       </div>
     </div>
 

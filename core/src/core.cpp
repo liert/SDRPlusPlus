@@ -59,6 +59,11 @@ namespace core {
 
 // main
 int sdrpp_main(int argc, char* argv[]) {
+#ifdef _WIN32
+    SetConsoleCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
+    std::setlocale(LC_ALL, ".UTF-8");
+#endif
     flog::info("SDR++ v" VERSION_STR);
 
 #ifdef IS_MACOS_BUNDLE
@@ -85,20 +90,25 @@ int sdrpp_main(int argc, char* argv[]) {
 
     // Set error mode to avoid abnoxious popups
     SetErrorMode(SEM_NOOPENFILEERRORBOX | SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    std::string exeDir = std::filesystem::u8path(exePath).parent_path().u8string();
+    SetDllDirectoryA(exeDir.c_str());
 #endif
 
     // Check root directory
     std::string root = (std::string)core::args["root"];
-    if (!std::filesystem::exists(root)) {
+    if (!std::filesystem::exists(std::filesystem::u8path(root))) {
         flog::warn("Root directory {0} does not exist, creating it", root);
-        if (!std::filesystem::create_directories(root)) {
+        if (!std::filesystem::create_directories(std::filesystem::u8path(root))) {
             flog::error("Could not create root directory {0}", root);
             return -1;
         }
     }
 
     // Check that the path actually is a directory
-    if (!std::filesystem::is_directory(root)) {
+    if (!std::filesystem::is_directory(std::filesystem::u8path(root))) {
         flog::error("{0} is not a directory", root);
         return -1;
     }

@@ -12,7 +12,7 @@ ConfigManager::~ConfigManager() {
 }
 
 void ConfigManager::setPath(std::string file) {
-    path = std::filesystem::absolute(file).string();
+    path = file;
 }
 
 void ConfigManager::load(json def, bool lock) {
@@ -21,12 +21,12 @@ void ConfigManager::load(json def, bool lock) {
         flog::error("Config manager tried to load file with no path specified");
         return;
     }
-    if (!std::filesystem::exists(path)) {
+    if (!std::filesystem::exists(std::filesystem::u8path(path))) {
         flog::warn("Config file '{0}' does not exist, creating it", path);
         conf = def;
         save(false);
     }
-    if (!std::filesystem::is_regular_file(path)) {
+    if (!std::filesystem::is_regular_file(std::filesystem::u8path(path))) {
         flog::error("Config file '{0}' isn't a file", path);
         return;
     }

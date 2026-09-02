@@ -7,19 +7,22 @@ ModuleManager::Module_t ModuleManager::loadModule(std::string path) {
 
     // On android, the path has to be relative, don't make it absolute
 #ifndef __ANDROID__
-    if (!std::filesystem::exists(path)) {
+    if (!std::filesystem::exists(std::filesystem::u8path(path))) {
         flog::error("{0} does not exist", path);
         mod.handle = NULL;
         return mod;
     }
-    if (!std::filesystem::is_regular_file(path)) {
+    if (!std::filesystem::is_regular_file(std::filesystem::u8path(path))) {
         flog::error("{0} isn't a loadable module", path);
         mod.handle = NULL;
         return mod;
     }
 #endif
 #ifdef _WIN32
-    mod.handle = LoadLibraryA(path.c_str());
+    mod.handle = LoadLibraryExA(path.c_str(), NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (mod.handle == NULL) {
+        mod.handle = LoadLibraryA(path.c_str());
+    }
     if (mod.handle == NULL) {
         flog::error("Couldn't load {0}. Error code: {1}", path, (int)GetLastError());
         mod.handle = NULL;

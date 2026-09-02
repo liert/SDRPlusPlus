@@ -82,7 +82,6 @@ namespace server {
         auto modList = core::configManager.conf["moduleInstances"].items();
         std::string sourceName = core::configManager.conf["source"];
         core::configManager.release();
-        modulesDir = std::filesystem::absolute(modulesDir).string();
 
         // Initialize SmGui in server mode
         SmGui::init(true);
@@ -90,11 +89,11 @@ namespace server {
         flog::info("Loading modules");
         // Load modules and check type to only load sources ( TODO: Have a proper type parameter int the info )
         // TODO LATER: Add whitelist/blacklist stuff
-        if (std::filesystem::is_directory(modulesDir)) {
-            for (const auto& file : std::filesystem::directory_iterator(modulesDir)) {
-                std::string path = file.path().generic_string();
-                std::string fn = file.path().filename().string();
-                if (file.path().extension().generic_string() != SDRPP_MOD_EXTENTSION) {
+        if (std::filesystem::is_directory(std::filesystem::u8path(modulesDir))) {
+            for (const auto& file : std::filesystem::directory_iterator(std::filesystem::u8path(modulesDir))) {
+                std::string path = file.path().generic_u8string();
+                std::string fn = file.path().filename().generic_u8string();
+                if (file.path().extension().generic_u8string() != SDRPP_MOD_EXTENTSION) {
                     continue;
                 }
                 if (!file.is_regular_file()) { continue; }
@@ -111,10 +110,10 @@ namespace server {
         // Load additional modules through the config ( TODO: Have a proper type parameter int the info )
         // TODO LATER: Add whitelist/blacklist stuff
         for (auto const& apath : modules) {
-            std::filesystem::path file = std::filesystem::absolute(apath);
-            std::string path = file.generic_string();
-            std::string fn = file.filename().string();
-            if (file.extension().generic_string() != SDRPP_MOD_EXTENTSION) {
+            std::filesystem::path file = std::filesystem::u8path(apath);
+            std::string path = file.generic_u8string();
+            std::string fn = file.filename().generic_u8string();
+            if (file.extension().generic_u8string() != SDRPP_MOD_EXTENTSION) {
                 continue;
             }
             if (!std::filesystem::is_regular_file(file)) { continue; }

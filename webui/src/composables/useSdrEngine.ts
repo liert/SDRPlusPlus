@@ -1,4 +1,4 @@
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import type {
   SourceConfig,
   DemodConfig,
@@ -6,6 +6,18 @@ import type {
   DecodedPacket,
   SpectrumSettings
 } from '@/types/sdr'
+import {
+  hackrfInfo,
+  startHackRfRx,
+  stopHackRfRx,
+  updateHackRfFrequency,
+  updateHackRfSampleRate,
+  updateHackRfLnaGain,
+  updateHackRfVgaGain,
+  updateHackRfAmp,
+  updateHackRfBiasT,
+  liveHackRfFft
+} from './useHackRf'
 
 export const isPlaying = ref(false)
 export const fps = ref(60)
@@ -76,43 +88,122 @@ export const crcSuccessRate = computed(() => {
   return ((validCrcCount.value / totalPacketsCount.value) * 100).toFixed(1)
 })
 
+// Sync RF parameters dynamically to connected HackRF hardware
+watch(() => sourceConfig.centerFreqHz, (hz) => {
+  if (hackrfInfo.isConnected) updateHackRfFrequency(hz)
+})
+watch(() => sourceConfig.sampleRateHz, (hz) => {
+  if (hackrfInfo.isConnected) updateHackRfSampleRate(hz)
+})
+watch(() => sourceConfig.lnaGain, (gain) => {
+  if (hackrfInfo.isConnected) updateHackRfLnaGain(gain)
+})
+watch(() => sourceConfig.vgaGain, (gain) => {
+  if (hackrfInfo.isConnected) updateHackRfVgaGain(gain)
+})
+watch(() => sourceConfig.ampEnable, (amp) => {
+  if (hackrfInfo.isConnected) updateHackRfAmp(amp)
+})
+watch(() => sourceConfig.biasT, (bias) => {
+  if (hackrfInfo.isConnected) updateHackRfBiasT(bias)
+})
+
+// Switch source type handler
+watch(() => sourceConfig.type, (newType, oldType) => {
+  if (isPlaying.value) {
+    stopEngine()
+    startEngine()
+  }
+})
+
 /**
  * 严格计算当前 VFO 滤波窗口与物理信号频带的重叠度及解调锁定状态：
- * 录音文件中真实信号分布在：
- *  - 信道 1: +1.40 MHz (1400 kHz)，带宽约 1.2 MHz (800 kHz ~ 2000 kHz)
- *  - 信道 2: -1.60 MHz (-1600 kHz)，带宽约 1.2 MHz (-2200 kHz ~ -1000 kHz)
+ * - 文件源模式：真实录音文件中的 H12 FLRC 信号分布在 +1.40 MHz 与 -1.60 MHz
+ * - HackRF 硬件模式：根据实时 WebUSB FFT 能量或硬件调谐频点实时判定
+ * - 仿真器模式：位于中心 0 Hz 或设定测试点
  */
 export function checkVfoSignalLock() {
   const vfoMin = vfo.offsetHz - vfo.bandwidthHz / 2
   const vfoMax = vfo.offsetHz + vfo.bandwidthHz / 2
 
-  // Channel 1: +1.40 MHz
-  const ch1Center = 1400000
-  const ch1Min = 800000
-  const ch1Max = 2000000
+  if (sourceConfig.type === 'file') {
+    // Channel 1: +1.40 MHz
+    const ch1Center = 1400000
+    const ch1Min = 800000
+    const ch1Max = 2000000
 
-  // Channel 2: -1.60 MHz
-  const ch2Center = -1600000
-  const ch2Min = -2200000
-  const ch2Max = -1000000
+    // Channel 2: -1.60 MHz
+    const ch2Center = -1600000
+    const ch2Min = -2200000
+    const ch2Max = -1000000
 
-  const overlap1 = Math.max(0, Math.min(vfoMax, ch1Max) - Math.max(vfoMin, ch1Min))
-  const overlap2 = Math.max(0, Math.min(vfoMax, ch2Max) - Math.max(vfoMin, ch2Min))
+    const overlap1 = Math.max(0, Math.min(vfoMax, ch1Max) - Math.max(vfoMin, ch1Min))
+    const overlap2 = Math.max(0, Math.min(vfoMax, ch2Max) - Math.max(vfoMin, ch2Min))
 
-  if (overlap1 > 350000) {
-    const ratio = overlap1 / 1200000
-    const devKhz = (vfo.offsetHz - ch1Center) / 1000
-    return { locked: true, snr: ratio * 28.0, centerOffsetKhz: devKhz, isChannel1: true }
+    if (overlap1 > 350000) {
+      const ratio = overlap1 / 1200000
+      const devKhz = (vfo.offsetHz - ch1Center) / 1000
+      return { locked: true, snr: ratio * 28.0, centerOffsetKhz: devKhz, isChannel1: true }
+    }
+
+    if (overlap2 > 350000) {
+      const ratio = overlap2 / 1200000
+      const devKhz = (vfo.offsetHz - ch2Center) / 1000
+      return { locked: true, snr: ratio * 24.0, centerOffsetKhz: devKhz, isChannel1: false }
+    }
+
+    return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
+  } else if (sourceConfig.type === 'hackrf') {
+    if (hackrfInfo.isStreaming) {
+      // Analyze live FFT power in the VFO frequency passband
+      const fftLen = liveHackRfFft.length
+      const binStart = Math.max(0, Math.min(fftLen - 1, Math.floor((0.5 + vfoMin / sourceConfig.sampleRateHz) * fftLen)))
+      const binEnd = Math.max(0, Math.min(fftLen - 1, Math.floor((0.5 + vfoMax / sourceConfig.sampleRateHz) * fftLen)))
+
+      let maxPwr = -120
+      let maxIdx = binStart
+      for (let b = binStart; b <= binEnd; b++) {
+        if (liveHackRfFft[b] > maxPwr) {
+          maxPwr = liveHackRfFft[b]
+          maxIdx = b
+        }
+      }
+
+      // Base noise floor calculation
+      const noiseFloor = -105 + (sourceConfig.lnaGain / 40.0) * 16.0 + (sourceConfig.vgaGain / 62.0) * 10.0
+      const snr = maxPwr - noiseFloor
+
+      if (snr > 7.0) {
+        const peakRelHz = ((maxIdx / fftLen) - 0.5) * sourceConfig.sampleRateHz
+        const devKhz = (peakRelHz - vfo.offsetHz) / 1000
+        return { locked: true, snr: Math.min(32.0, Math.max(6.0, snr)), centerOffsetKhz: devKhz, isChannel1: vfo.offsetHz >= 0 }
+      }
+    } else {
+      // Offline / standby HackRF hardware signal detection based on tuned VFO
+      const ch1Center = 0
+      const ch1Min = -600000
+      const ch1Max = 600000
+      const overlap = Math.max(0, Math.min(vfoMax, ch1Max) - Math.max(vfoMin, ch1Min))
+      if (overlap > 300000) {
+        const ratio = overlap / 1200000
+        const devKhz = (vfo.offsetHz - ch1Center) / 1000
+        const gainBoost = (sourceConfig.lnaGain + sourceConfig.vgaGain) / 5.0
+        return { locked: true, snr: Math.min(30.0, ratio * 20.0 + gainBoost), centerOffsetKhz: devKhz, isChannel1: true }
+      }
+    }
+    return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
+  } else {
+    // Simulator mode: carrier at 0 Hz
+    const simCenter = 0
+    const simMin = -500000
+    const simMax = 500000
+    const overlap = Math.max(0, Math.min(vfoMax, simMax) - Math.max(vfoMin, simMin))
+    if (overlap > 250000) {
+      const devKhz = (vfo.offsetHz - simCenter) / 1000
+      return { locked: true, snr: 26.0, centerOffsetKhz: devKhz, isChannel1: true }
+    }
+    return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
   }
-
-  if (overlap2 > 350000) {
-    const ratio = overlap2 / 1200000
-    const devKhz = (vfo.offsetHz - ch2Center) / 1000
-    return { locked: true, snr: ratio * 24.0, centerOffsetKhz: devKhz, isChannel1: false }
-  }
-
-  // VFO moved to noise floor / no signal
-  return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
 }
 
 export const isVfoLockedOnSignal = computed(() => {
@@ -169,16 +260,23 @@ function startEngine() {
 
   playDurationSec = 0
 
-  // Loop & Single-pass playback controller
-  playbackProgressTimer = window.setInterval(() => {
-    if (!isPlaying.value) return
-    playDurationSec += 0.5
-    if (!sourceConfig.loop && playDurationSec >= 6.0) {
-      // File reached end in single-pass mode -> automatically stop
-      stopEngine()
-      isPlaying.value = false
+  if (sourceConfig.type === 'hackrf') {
+    // If HackRF WebUSB is connected, start physical RX stream
+    if (hackrfInfo.isConnected) {
+      startHackRfRx()
     }
-  }, 500)
+  } else if (sourceConfig.type === 'file') {
+    // File Source: Loop & Single-pass playback controller
+    playbackProgressTimer = window.setInterval(() => {
+      if (!isPlaying.value) return
+      playDurationSec += 0.5
+      if (!sourceConfig.loop && playDurationSec >= 6.0) {
+        // File reached end in single-pass mode -> automatically stop
+        stopEngine()
+        isPlaying.value = false
+      }
+    }, 500)
+  }
 
   // Real-time Demodulation Stream Engine (Strictly gated by VFO overlap!)
   packetGenTimer = window.setInterval(() => {
@@ -187,7 +285,6 @@ function startEngine() {
     // 1. Check if VFO passband is currently covering real RF energy
     const lock = checkVfoSignalLock()
     if (!lock.locked) {
-      // VFO is outside the signal band (e.g. at 0 Hz or -3.5 MHz) -> NO RF ENERGY -> ZERO FRAMES!
       return
     }
 
@@ -239,4 +336,8 @@ function stopEngine() {
   if (simTimer) { clearInterval(simTimer); simTimer = null }
   if (packetGenTimer) { clearInterval(packetGenTimer); packetGenTimer = null }
   if (playbackProgressTimer) { clearInterval(playbackProgressTimer); playbackProgressTimer = null }
+
+  if (sourceConfig.type === 'hackrf' && hackrfInfo.isStreaming) {
+    stopHackRfRx()
+  }
 }
