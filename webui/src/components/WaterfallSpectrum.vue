@@ -23,9 +23,13 @@ let colormapLut = generateColormapLut(spectrumSettings.colormap)
 let offscreenCanvas: HTMLCanvasElement | null = null
 let offscreenCtx: CanvasRenderingContext2D | null = null
 
+// Preallocated single row buffer to eliminate garbage collection lag
+let cachedRowImg: ImageData | null = null
+let cachedRowWidth = 0
+
 // Simulated / Live FFT power spectrum (1024 bins)
 const fftSize = 1024
-const currentFft = new Float32Array(fftSize)
+const currentFft = new Float32Array(fftSize).fill(-90)
 const peakFft = new Float32Array(fftSize).fill(-120)
 
 // Dragging & VFO interaction state
@@ -37,6 +41,14 @@ let activeCanvasWidth = 1000
 watch(() => spectrumSettings.colormap, (newMap) => {
   colormapLut = generateColormapLut(newMap)
 })
+
+function getRowImageData(ctx: CanvasRenderingContext2D, width: number): ImageData {
+  if (!cachedRowImg || cachedRowWidth !== width) {
+    cachedRowImg = ctx.createImageData(width, 1)
+    cachedRowWidth = width
+  }
+  return cachedRowImg
+}
 
 function handleResize() {
   if (!containerRef.value || !spectrumCanvas.value || !waterfallCanvas.value) return
@@ -72,7 +84,7 @@ function updateSimulatedFft(time: number) {
   const minDb = spectrumSettings.minDb
   const maxDb = spectrumSettings.maxDb
 
-  // Case 1: Live Streaming from C++ Backend WebSocket
+  // Case 1: Real-time Live FFT from C++ Backend (via WebSocket)
   if (hasLiveHackRfData.value || isBackendConnected.value) {
     for (let i = 0; i < fftSize; i++) {
       const liveVal = liveHackRfFft[i]
@@ -82,32 +94,29 @@ function updateSimulatedFft(time: number) {
       if (currentFft[i] > peakFft[i]) {
         peakFft[i] = currentFft[i]
       } else {
-        peakFft[i] -= 0.15
+        peakFft[i] -= 0.25
       }
     }
     return
   }
 
-  // Case 2: Generated spectrum dynamically based on active source mode and center frequency
+  // Case 2: Dynamic simulation based on tuned frequency when offline
   for (let i = 0; i < fftSize; i++) {
     const freqRel = (i / fftSize - 0.5) * sourceConfig.sampleRateHz
     let noise = minDb + Math.random() * 8.0 - 5.0
 
     if (sourceConfig.type === 'hackrf') {
-      // HackRF hardware noise model: Gain controls dynamically lift the noise floor
       const gainOffset = (sourceConfig.lnaGain / 40.0) * 16.0 + (sourceConfig.vgaGain / 62.0) * 12.0 + (sourceConfig.ampEnable ? 14.0 : 0.0)
       noise = minDb + gainOffset + (Math.random() * 6.0 - 3.0)
 
       if (isPlaying.value) {
-        // Direct conversion DC center spike
         const distDC = Math.abs(freqRel)
         if (distDC < 50000) {
           noise += (1 - distDC / 50000) * 18.0
         }
 
-        // Dynamic RF signals relative to tuned center frequency
-        const targetFreq1 = 2401400000 // 2401.4 MHz (H12 channel 1)
-        const targetFreq2 = 2398400000 // 2398.4 MHz (H12 channel 2)
+        const targetFreq1 = 2401400000
+        const targetFreq2 = 2398400000
         const currFreq = sourceConfig.centerFreqHz + freqRel
 
         const dist1 = Math.abs(currFreq - targetFreq1)
@@ -123,7 +132,6 @@ function updateSimulatedFft(time: number) {
         }
       }
     } else if (sourceConfig.type === 'file') {
-      // File Source: H12 signal bursts recorded in fresh_pairing_2400_8.iq
       if (isPlaying.value) {
         const dist1 = Math.abs(freqRel - 1400000)
         if (dist1 < 650000) {
@@ -140,13 +148,6 @@ function updateSimulatedFft(time: number) {
         const distDC = Math.abs(freqRel)
         if (distDC < 50000) {
           noise += (1 - distDC / 50000) * 20.0
-        }
-      }
-    } else if (sourceConfig.type === 'simulator') {
-      if (isPlaying.value) {
-        const distCenter = Math.abs(freqRel)
-        if (distCenter < 100000) {
-          noise += (1 - distCenter / 100000) * 55.0
         }
       }
     } else {
@@ -267,25 +268,27 @@ function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: nu
 function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: number) {
   if (!offscreenCanvas || !offscreenCtx) return
 
-  // 1. Only advance buffer when actually playing
-  if (isPlaying.value) {
+  // 1. Advance waterfall buffer smoothly
+  if (isPlaying.value || (isBackendConnected.value && hasLiveHackRfData.value)) {
     offscreenCtx.drawImage(offscreenCanvas, 0, 0, width, height - 1, 0, 1, width, height - 1)
 
-    const rowImg = offscreenCtx.createImageData(width, 1)
+    const rowImg = getRowImageData(offscreenCtx, width)
     const minDb = spectrumSettings.minDb
     const maxDb = spectrumSettings.maxDb
     const dbRange = maxDb - minDb
 
+    const data = rowImg.data
     for (let x = 0; x < width; x++) {
       const binIdx = Math.floor((x / width) * fftSize)
       const val = currentFft[binIdx]
       const norm = Math.min(1, Math.max(0, (val - minDb) / dbRange))
       const lutIdx = Math.floor(norm * 255)
 
-      rowImg.data[x * 4 + 0] = colormapLut[lutIdx * 4 + 0]
-      rowImg.data[x * 4 + 1] = colormapLut[lutIdx * 4 + 1]
-      rowImg.data[x * 4 + 2] = colormapLut[lutIdx * 4 + 2]
-      rowImg.data[x * 4 + 3] = 255
+      const px = x * 4
+      data[px + 0] = colormapLut[lutIdx * 4 + 0]
+      data[px + 1] = colormapLut[lutIdx * 4 + 1]
+      data[px + 2] = colormapLut[lutIdx * 4 + 2]
+      data[px + 3] = 255
     }
 
     offscreenCtx.putImageData(rowImg, 0, 0)
@@ -318,9 +321,7 @@ function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: n
 
 function loop(t: number) {
   const time = t * 0.001
-  if (isPlaying.value) {
-    updateSimulatedFft(time)
-  }
+  updateSimulatedFft(time)
 
   if (spectrumCanvas.value) {
     const ctx = spectrumCanvas.value.getContext('2d')

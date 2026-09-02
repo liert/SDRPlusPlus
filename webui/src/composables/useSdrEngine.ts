@@ -108,6 +108,7 @@ export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
       isBackendConnected.value = true
       backendStatusText.value = '⚡ C++ 后端已连接 (高性能 DSP 引擎)'
       console.log('Connected to SDR++ C++ Backend Engine over WebSocket')
+      isPlaying.value = true
       
       // Initialize parameter sync on connect
       const sname = sourceConfig.type === 'hackrf' ? 'HackRF' : (sourceConfig.type === 'file' ? 'File Source' : 'RTL-SDR')
@@ -120,6 +121,7 @@ export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
         amp: sourceConfig.ampEnable,
         biasT: sourceConfig.biasT
       })
+      sendBackendCommand('start')
       sendBackendCommand('get_devices')
       sendBackendCommand('get_sources')
       sendBackendCommand('get_status')
@@ -131,7 +133,9 @@ export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
         const floats = new Float32Array(event.data)
         if (floats.length === 1024) {
           liveHackRfFft.set(floats)
-          hasLiveHackRfData.value = true
+          if (!hasLiveHackRfData.value) {
+            hasLiveHackRfData.value = true
+          }
         }
       } else if (typeof event.data === 'string') {
         try {

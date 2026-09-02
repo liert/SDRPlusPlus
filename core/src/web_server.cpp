@@ -5,6 +5,7 @@
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -206,6 +207,7 @@ namespace web_server {
         }
 
         frame.insert(frame.end(), payload, payload + len);
+
         int total = (int)frame.size();
         int sent = 0;
         while (sent < total) {
@@ -220,7 +222,7 @@ namespace web_server {
         std::lock_guard<std::mutex> lock(clientsMutex);
         for (auto it = clients.begin(); it != clients.end();) {
             auto client = *it;
-            if (client->isWebSocket) {
+            if (client->isWebSocket && client->sock != INVALID_SOCKET) {
                 sendWsFrame(client->sock, 0x02, (const uint8_t*)fftDb, size * sizeof(float));
                 ++it;
             } else {
@@ -234,7 +236,7 @@ namespace web_server {
         std::lock_guard<std::mutex> lock(clientsMutex);
         for (auto it = clients.begin(); it != clients.end();) {
             auto client = *it;
-            if (client->isWebSocket) {
+            if (client->isWebSocket && client->sock != INVALID_SOCKET) {
                 sendWsFrame(client->sock, 0x01, (const uint8_t*)jsonStr.data(), jsonStr.size());
                 ++it;
             } else {
@@ -246,13 +248,14 @@ namespace web_server {
     void processIqSamples(const dsp::complex_t* samples, int count, double sampleRate) {
         if (!samples || count < FFT_SIZE || !fftPlan) return;
 
-        // Rate limit FFT broadcast to ~45 FPS to maintain super smooth UI
+        // Rate limit FFT calculation to ~35 FPS
         auto now = std::chrono::steady_clock::now();
         auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFftTime).count();
-        if (elapsedMs < 22) return;
+        if (elapsedMs < 28) return;
         lastFftTime = now;
 
-        std::lock_guard<std::mutex> lock(fftMutex);
+        std::unique_lock<std::mutex> lock(fftMutex, std::try_to_lock);
+        if (!lock.owns_lock()) return; // Non-blocking DSP stream safety
 
         // Apply window and copy into FFTW input
         for (int i = 0; i < FFT_SIZE; i++) {
@@ -262,14 +265,15 @@ namespace web_server {
 
         fftwf_execute(fftPlan);
 
-        // Compute power in dBm and FFT shift (center DC bin at index 512)
+        // Compute power in dBm with proper 1/N normalization
         int halfFft = FFT_SIZE / 2;
+        float norm = 1.0f / (float)FFT_SIZE;
         for (int i = 0; i < FFT_SIZE; i++) {
             int srcIdx = (i + halfFft) % FFT_SIZE;
-            float re = fftwOut[srcIdx][0];
-            float im = fftwOut[srcIdx][1];
+            float re = fftwOut[srcIdx][0] * norm;
+            float im = fftwOut[srcIdx][1] * norm;
             float pwr = re * re + im * im + 1e-12f;
-            float dbm = 10.0f * log10f(pwr) - 20.0f;
+            float dbm = 10.0f * log10f(pwr);
             fftOutputDb[i] = std::max(-120.0f, std::min(10.0f, dbm));
         }
 
@@ -328,7 +332,9 @@ namespace web_server {
                     flog::info("WebUI WebSocket Client Connected successfully.");
 
                     // Send initial status JSON frame
-                    nlohmann::json initMsg = getStatusJson();
+                    nlohmann::json initMsg;
+                    if (customCmdHandler) initMsg = customCmdHandler("get_status", nlohmann::json::object());
+                    else initMsg = getStatusJson();
                     initMsg["type"] = "status";
                     std::string initStr = initMsg.dump();
                     sendWsFrame(client->sock, 0x01, (const uint8_t*)initStr.data(), initStr.size());
@@ -439,20 +445,8 @@ namespace web_server {
 
                         nlohmann::json resp;
                         if (cmd == "get_status") {
-                            resp = getStatusJson();
-                        } else if (cmd == "start") {
-                            sigpath::sourceManager.start();
-                            resp["status"] = "ok";
-                            resp["running"] = true;
-                        } else if (cmd == "stop") {
-                            sigpath::sourceManager.stop();
-                            resp["status"] = "ok";
-                            resp["running"] = false;
-                        } else if (cmd == "set_freq" && j.contains("freq")) {
-                            double freq = j["freq"];
-                            sigpath::sourceManager.tune(freq);
-                            resp["status"] = "ok";
-                            resp["freq"] = freq;
+                            if (customCmdHandler) resp = customCmdHandler("get_status", j);
+                            else resp = getStatusJson();
                         } else if (customCmdHandler) {
                             resp = customCmdHandler(cmd, j);
                         } else {
@@ -523,7 +517,7 @@ namespace web_server {
                 }
             }
 
-            timeval tv = {0, 50000}; // 50ms timeout
+            timeval tv = {0, 30000}; // 30ms timeout
             int sel = select((int)maxFd + 1, &readFds, NULL, NULL, &tv);
             if (sel <= 0) continue;
 
@@ -533,6 +527,11 @@ namespace web_server {
                 socklen_t clientLen = sizeof(clientAddr);
                 SOCKET clientSock = accept(listenSocket, (sockaddr*)&clientAddr, &clientLen);
                 if (clientSock != INVALID_SOCKET) {
+                    int nodelay = 1;
+                    setsockopt(clientSock, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
+                    int sndbuf = 262144;
+                    setsockopt(clientSock, SOL_SOCKET, SO_SNDBUF, (const char*)&sndbuf, sizeof(sndbuf));
+
                     auto newClient = std::make_shared<WsClient>();
                     newClient->sock = clientSock;
                     newClient->isWebSocket = false;
