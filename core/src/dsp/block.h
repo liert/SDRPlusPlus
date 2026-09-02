@@ -65,7 +65,13 @@ namespace dsp {
 
     protected:
         void workerLoop() {
-            while (run() >= 0) {}
+            while (running || tempStopped) {
+                int ret = run();
+                if (ret < 0) {
+                    if (!running) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
         }
 
         virtual void doStart() {

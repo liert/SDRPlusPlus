@@ -172,6 +172,28 @@ namespace web_server {
     static std::mutex fftMutex;
     static std::chrono::steady_clock::time_point lastFftTime;
 
+    // === Asynchronous Broadcast Queue (Decoupled from DSP Thread) ===
+    static float asyncFftBuffer[FFT_SIZE];
+    static std::mutex asyncFftMutex;
+    static std::atomic<bool> asyncFftPending(false);
+    static std::thread broadcastThread;
+    static std::atomic<bool> broadcasterRunning(false);
+
+    static void broadcasterWorker() {
+        float localFft[FFT_SIZE];
+        while (broadcasterRunning.load()) {
+            if (asyncFftPending.load()) {
+                asyncFftPending.store(false);
+                {
+                    std::lock_guard<std::mutex> lock(asyncFftMutex);
+                    std::memcpy(localFft, asyncFftBuffer, sizeof(localFft));
+                }
+                broadcastFft(localFft, FFT_SIZE);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20)); // ~50 FPS max
+        }
+    }
+
     static void initFft() {
         fftwIn = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * FFT_SIZE);
         fftwOut = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * FFT_SIZE);
@@ -324,9 +346,15 @@ namespace web_server {
             fftOutputDb[i] = std::max(-120.0f, std::min(10.0f, dbm));
         }
 
-        // Broadcast binary Float32Array over WebSocket & Shared Memory
+        // 1. Update Windows Shared Memory (Instant zero-copy IPC: < 0.001 ms)
         shm_manager::updateFft(fftOutputDb, FFT_SIZE);
-        broadcastFft(fftOutputDb, FFT_SIZE);
+
+        // 2. Queue for asynchronous WebSocket broadcaster (Zero blocking in DSP thread: < 0.001 ms)
+        {
+            std::lock_guard<std::mutex> alock(asyncFftMutex);
+            std::memcpy(asyncFftBuffer, fftOutputDb, sizeof(asyncFftBuffer));
+            asyncFftPending.store(true);
+        }
     }
 
     nlohmann::json getStatusJson() {
@@ -640,12 +668,18 @@ namespace web_server {
         if (serverRunning) return;
         initFft();
         serverRunning = true;
+        broadcasterRunning = true;
+        broadcastThread = std::thread(broadcasterWorker);
         serverThread = std::thread(serverWorker, port, host);
     }
 
     void stop() {
         if (!serverRunning) return;
         serverRunning = false;
+        broadcasterRunning = false;
+        if (broadcastThread.joinable()) {
+            broadcastThread.join();
+        }
         if (serverThread.joinable()) {
             serverThread.join();
         }

@@ -101,8 +101,12 @@ export const crcSuccessRate = computed(() => {
 export function initShmEngine() {
   if (!isTauriEnv) return false
 
+  let isPolling = false
+
   // 1. High-speed zero-latency Shared Memory FFT polling loop
   const pollShmFft = async () => {
+    if (isPolling) return
+    isPolling = true
     try {
       const res = await invoke<ArrayBuffer>('get_shm_fft')
       if (res && res.byteLength === 4096) {
@@ -118,6 +122,8 @@ export function initShmEngine() {
       }
     } catch (e) {
       // Backend not yet ready or mapping pending
+    } finally {
+      isPolling = false
     }
     if (isTauriEnv) {
       requestAnimationFrame(pollShmFft)

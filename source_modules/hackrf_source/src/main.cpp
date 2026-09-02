@@ -296,7 +296,8 @@ private:
 
     static void tune(double freq, void* ctx) {
         HackRFSourceModule* _this = (HackRFSourceModule*)ctx;
-        if (_this->running) {
+        std::lock_guard<std::mutex> lock(_this->devMtx);
+        if (_this->running && _this->openDev) {
             hackrf_set_freq(_this->openDev, freq);
         }
         _this->freq = freq;
@@ -389,8 +390,23 @@ private:
     }
 
 public:
+    static void applyAllGains(float lnaVal, float vgaVal, bool ampVal, bool biasTVal) {
+        if (!instance) return;
+        std::lock_guard<std::mutex> lock(instance->devMtx);
+        instance->lna = lnaVal;
+        instance->vga = vgaVal;
+        instance->amp = ampVal;
+        instance->biasT = biasTVal;
+        if (instance->running && instance->openDev) {
+            hackrf_set_lna_gain(instance->openDev, (uint32_t)lnaVal);
+            hackrf_set_vga_gain(instance->openDev, (uint32_t)vgaVal);
+            hackrf_set_amp_enable(instance->openDev, ampVal ? 1 : 0);
+            hackrf_set_antenna_enable(instance->openDev, biasTVal ? 1 : 0);
+        }
+    }
     static void setLnaGain(float gain) {
         if (!instance) return;
+        std::lock_guard<std::mutex> lock(instance->devMtx);
         instance->lna = gain;
         if (instance->running && instance->openDev) {
             hackrf_set_lna_gain(instance->openDev, (uint32_t)gain);
@@ -398,6 +414,7 @@ public:
     }
     static void setVgaGain(float gain) {
         if (!instance) return;
+        std::lock_guard<std::mutex> lock(instance->devMtx);
         instance->vga = gain;
         if (instance->running && instance->openDev) {
             hackrf_set_vga_gain(instance->openDev, (uint32_t)gain);
@@ -405,6 +422,7 @@ public:
     }
     static void setAmp(bool amp) {
         if (!instance) return;
+        std::lock_guard<std::mutex> lock(instance->devMtx);
         instance->amp = amp;
         if (instance->running && instance->openDev) {
             hackrf_set_amp_enable(instance->openDev, amp ? 1 : 0);
@@ -412,6 +430,7 @@ public:
     }
     static void setBiasT(bool biasT) {
         if (!instance) return;
+        std::lock_guard<std::mutex> lock(instance->devMtx);
         instance->biasT = biasT;
         if (instance->running && instance->openDev) {
             hackrf_set_antenna_enable(instance->openDev, biasT ? 1 : 0);
@@ -419,6 +438,7 @@ public:
     }
     static void setSampleRateValue(int sr) {
         if (!instance) return;
+        std::lock_guard<std::mutex> lock(instance->devMtx);
         instance->sampleRate = sr;
         if (instance->running && instance->openDev) {
             hackrf_set_sample_rate(instance->openDev, sr);
@@ -461,6 +481,7 @@ private:
 
     std::vector<std::string> devList;
     std::string devListTxt;
+    std::mutex devMtx;
 };
 
 MOD_EXPORT void _INIT_() {
@@ -487,9 +508,6 @@ MOD_EXPORT void _END_() {
 
 extern "C" {
     MOD_EXPORT void hackrf_apply_gain(float lna, float vga, bool amp, bool biasT) {
-        HackRFSourceModule::setLnaGain(lna);
-        HackRFSourceModule::setVgaGain(vga);
-        HackRFSourceModule::setAmp(amp);
-        HackRFSourceModule::setBiasT(biasT);
+        HackRFSourceModule::applyAllGains(lna, vga, amp, biasT);
     }
 }
