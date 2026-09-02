@@ -396,9 +396,9 @@ impl ShmManager {
             let copy_len = cmd_bytes.len().min(31);
             cmd_buf.cmd[0..copy_len].copy_from_slice(&cmd_bytes[0..copy_len]);
 
-            if let Some(f) = params.get("freq").and_then(|v| v.as_f64()) {
+            if let Some(f) = params.get("freq").and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)).or_else(|| v.as_u64().map(|u| u as f64))) {
                 cmd_buf.param_double = f;
-            } else if let Some(sr) = params.get("sampleRate").and_then(|v| v.as_f64()) {
+            } else if let Some(sr) = params.get("sampleRate").and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)).or_else(|| v.as_u64().map(|u| u as f64))) {
                 cmd_buf.param_double = sr;
             }
 

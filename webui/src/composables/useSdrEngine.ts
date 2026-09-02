@@ -163,6 +163,13 @@ export function initShmEngine() {
           dspSeq.value = st.seq
           backendStatusText.value = '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)'
 
+          if (st.sampleRate && Math.abs(sourceConfig.sampleRateHz - st.sampleRate) > 1) {
+            sourceConfig.sampleRateHz = st.sampleRate
+          }
+          if (st.centerFreq && Math.abs(sourceConfig.centerFreqHz - st.centerFreq) > 1) {
+            sourceConfig.centerFreqHz = st.centerFreq
+          }
+
           if (Array.isArray(st.devices) && st.devices.length > 0) {
             availableDevices.value = st.devices
             if (!sourceConfig.deviceSerial) {

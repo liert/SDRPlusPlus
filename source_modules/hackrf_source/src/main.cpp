@@ -541,4 +541,7 @@ extern "C" {
     MOD_EXPORT void hackrf_apply_gain(float lna, float vga, bool amp, bool biasT) {
         HackRFSourceModule::applyAllGains(lna, vga, amp, biasT);
     }
+    MOD_EXPORT void hackrf_set_samplerate(int sr) {
+        HackRFSourceModule::setSampleRateValue(sr);
+    }
 }

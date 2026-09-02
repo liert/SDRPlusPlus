@@ -184,12 +184,29 @@ namespace server {
                 double freq = params["freq"];
                 centerFreq = freq;
                 sigpath::sourceManager.tune(freq);
+                flog::info("⚡ [Frequency] Tuned to {0:.6f} MHz ({1} Hz)", freq / 1e6, (uint64_t)freq);
                 res["status"] = "ok";
                 res["freq"] = freq;
             } else if (cmd == "set_samplerate" && params.contains("sampleRate")) {
                 double sr = params["sampleRate"];
                 sampleRate = sr;
                 core::setInputSampleRate(sr);
+
+                // 1. Update HackRF source module
+                typedef void (*hackrf_sr_fn)(int);
+                if (core::moduleManager.modules.find("hackrf_source") != core::moduleManager.modules.end()) {
+                    auto fn = (hackrf_sr_fn)GetProcAddress((HMODULE)core::moduleManager.modules["hackrf_source"].handle, "hackrf_set_samplerate");
+                    if (fn) fn((int)sr);
+                }
+
+                // 2. Update File source module
+                typedef void (*file_sr_fn)(double);
+                if (core::moduleManager.modules.find("file_source") != core::moduleManager.modules.end()) {
+                    auto fn = (file_sr_fn)GetProcAddress((HMODULE)core::moduleManager.modules["file_source"].handle, "file_source_set_samplerate");
+                    if (fn) fn(sr);
+                }
+
+                flog::info("⚡ [SampleRate] Changed to {0:.3f} MSPS ({1} Hz) across C++ backend and hardware source", sr / 1e6, (uint64_t)sr);
                 res["status"] = "ok";
                 res["sampleRate"] = sr;
             } else if (cmd == "set_gain") {
@@ -204,6 +221,7 @@ namespace server {
                     if (fn) fn((float)lnaGain, (float)vgaGain, ampEnable, biasTEnable);
                 }
 
+                flog::info("⚡ [Gain] Applied LNA={0}dB, VGA={1}dB, Amp={2}, BiasT={3}", lnaGain, vgaGain, ampEnable, biasTEnable);
                 res["status"] = "ok";
                 res["lna"] = lnaGain;
                 res["vga"] = vgaGain;

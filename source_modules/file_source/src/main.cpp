@@ -361,4 +361,12 @@ extern "C" {
             FileSourceModule::instance->loopMode = loop;
         }
     }
+    MOD_EXPORT void file_source_set_samplerate(double sr) {
+        if (FileSourceModule::instance) {
+            FileSourceModule::instance->sampleRate = sr;
+            if (FileSourceModule::instance->reader) {
+                FileSourceModule::instance->reader->setSampleRate((uint32_t)sr);
+            }
+        }
+    }
 }
