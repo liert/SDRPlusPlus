@@ -2,7 +2,6 @@ mod shm;
 
 use std::fs::OpenOptions;
 use std::io::Read;
-use std::net::TcpStream;
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -11,18 +10,13 @@ use shm::{ShmManager, ShmStatusInfo, GLOBAL_SHM};
 
 static BACKEND_CHILD: Mutex<Option<Child>> = Mutex::new(None);
 
-fn is_server_running() -> bool {
-    if let Ok(addr) = "127.0.0.1:5259".parse() {
-        TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
-    } else {
-        false
-    }
-}
-
 fn spawn_backend() -> bool {
-    if is_server_running() {
-        return true;
+    if let Ok(mut lock) = BACKEND_CHILD.lock() {
+        if lock.is_some() {
+            return true;
+        }
     }
+
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(exe_dir) = current_exe.parent() {
             let backend_path = exe_dir.join("sdrpp.exe");
@@ -30,7 +24,7 @@ fn spawn_backend() -> bool {
 
             if backend_path.exists() {
                 let mut cmd = Command::new(&backend_path);
-                cmd.args(["-s", "-p", "5259", "-a", "0.0.0.0", "-r", ".", "-c"])
+                cmd.args(["-s", "-r", ".", "-c"])
                    .current_dir(exe_dir);
 
                 if let Ok(log_f) = OpenOptions::new().create(true).append(true).open(&log_path) {
@@ -153,18 +147,9 @@ pub fn run() {
             get_backend_logs,
             restart_backend
         ])
-        .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
-
-            // Auto-launch C++ backend if not already running
+        .setup(|_app| {
+            // Auto-launch C++ backend on startup
             spawn_backend();
-
             Ok(())
         })
         .on_window_event(|_window, event| {

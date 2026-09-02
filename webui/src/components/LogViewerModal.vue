@@ -16,21 +16,11 @@ let autoRefreshTimer: number | null = null
 
 async function fetchLogs() {
   isRefreshing.value = true
-  if (isTauriEnv) {
-    try {
-      const logs = await invoke<string>('get_backend_logs')
-      logContent.value = logs || '暂无日志记录。'
-    } catch (e: any) {
-      logContent.value = `获取日志失败: ${e?.message || e}`
-    }
-  } else {
-    try {
-      const resp = await fetch('http://127.0.0.1:5259/api/status')
-      const data = await resp.json()
-      logContent.value = JSON.stringify(data, null, 2)
-    } catch (e: any) {
-      logContent.value = `网络模式获取状态失败: ${e?.message || e}`
-    }
+  try {
+    const logs = await invoke<string>('get_backend_logs')
+    logContent.value = logs || '暂无日志记录。'
+  } catch (e: any) {
+    logContent.value = `获取日志失败: ${e?.message || e}`
   }
   isRefreshing.value = false
 }

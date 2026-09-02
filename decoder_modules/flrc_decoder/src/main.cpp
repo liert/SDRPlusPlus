@@ -25,7 +25,7 @@
 #include "protocol_raw.h"
 #include "protocol_flrc.h"
 #include "protocol_h12.h"
-#include <web_server.h>
+#include <shm_manager.h>
 
 #define CONCAT(a, b) ((std::string(a) + b).c_str())
 
@@ -190,7 +190,7 @@ private:
                 j["payloadHex"] = hexStr;
                 j["payloadAscii"] = asciiStr;
 
-                web_server::broadcastPacket(j);
+                shm_manager::pushPacket(j);
             }
         }
     }

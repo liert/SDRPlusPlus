@@ -4,6 +4,14 @@
 #include <atomic>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
+#include <chrono>
+#include <fftw3.h>
+#include <volk/volk.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -21,7 +29,39 @@ namespace shm_manager {
     static std::mutex shmMtx;
     static CommandHandler customCmdHandler = nullptr;
 
+    // === FFT Engine State ===
+    static const int FFT_SIZE = 1024;
+    static fftwf_complex* fftwIn = nullptr;
+    static fftwf_complex* fftwOut = nullptr;
+    static fftwf_plan fftPlan = nullptr;
+    static float windowLut[FFT_SIZE];
+    static float fftOutputDb[FFT_SIZE];
+    static std::mutex fftMutex;
+    static std::chrono::steady_clock::time_point lastFftTime;
+
+    static void initFft() {
+        if (fftwIn) return;
+        fftwIn = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * FFT_SIZE);
+        fftwOut = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * FFT_SIZE);
+        fftPlan = fftwf_plan_dft_1d(FFT_SIZE, fftwIn, fftwOut, FFTW_FORWARD, FFTW_ESTIMATE);
+
+        // Precompute Blackman-Harris 4-term window
+        for (int i = 0; i < FFT_SIZE; i++) {
+            double a0 = 0.35875, a1 = 0.48829, a2 = 0.14128, a3 = 0.01168;
+            double f = (2.0 * M_PI * i) / (FFT_SIZE - 1);
+            windowLut[i] = (float)(a0 - a1 * cos(f) + a2 * cos(2.0 * f) - a3 * cos(3.0 * f));
+        }
+        lastFftTime = std::chrono::steady_clock::now();
+    }
+
+    static void cleanupFft() {
+        if (fftPlan) { fftwf_destroy_plan(fftPlan); fftPlan = nullptr; }
+        if (fftwIn) { fftwf_free(fftwIn); fftwIn = nullptr; }
+        if (fftwOut) { fftwf_free(fftwOut); fftwOut = nullptr; }
+    }
+
     bool init() {
+        initFft();
 #ifdef _WIN32
         std::lock_guard<std::mutex> lock(shmMtx);
         if (shmHeader) return true;
@@ -74,7 +114,7 @@ namespace shm_manager {
             }
         }
 
-        flog::info("⚡ Windows Native Shared Memory (IPC) Engine Initialized (Buffer: 0x{0:X})", (uintptr_t)shmHeader);
+        flog::info("⚡ Windows Native Shared Memory (Zero-Copy IPC) Engine Initialized (Address: 0x{0:X})", (uintptr_t)shmHeader);
         return true;
 #else
         return false;
@@ -82,6 +122,7 @@ namespace shm_manager {
     }
 
     void cleanup() {
+        cleanupFft();
 #ifdef _WIN32
         std::lock_guard<std::mutex> lock(shmMtx);
         if (shmCmd) {
@@ -101,6 +142,42 @@ namespace shm_manager {
             hShm = NULL;
         }
 #endif
+    }
+
+    void processIqSamples(const dsp::complex_t* samples, int count, double sampleRate) {
+        if (!samples || count < FFT_SIZE || !fftPlan) return;
+
+        // Rate limit FFT to ~60 FPS (16ms)
+        auto now = std::chrono::steady_clock::now();
+        auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFftTime).count();
+        if (elapsedMs < 16) return;
+        lastFftTime = now;
+
+        std::unique_lock<std::mutex> lock(fftMutex, std::try_to_lock);
+        if (!lock.owns_lock()) return;
+
+        // Apply window and copy into FFTW input
+        for (int i = 0; i < FFT_SIZE; i++) {
+            fftwIn[i][0] = samples[i].re * windowLut[i];
+            fftwIn[i][1] = samples[i].im * windowLut[i];
+        }
+
+        fftwf_execute(fftPlan);
+
+        // Compute power in dBm with proper 1/N normalization
+        int halfFft = FFT_SIZE / 2;
+        float norm = 1.0f / (float)FFT_SIZE;
+        for (int i = 0; i < FFT_SIZE; i++) {
+            int srcIdx = (i + halfFft) % FFT_SIZE;
+            float re = fftwOut[srcIdx][0] * norm;
+            float im = fftwOut[srcIdx][1] * norm;
+            float pwr = re * re + im * im + 1e-12f;
+            float dbm = 10.0f * log10f(pwr);
+            fftOutputDb[i] = std::max(-120.0f, std::min(10.0f, dbm));
+        }
+
+        // Direct Ultra-Fast write into Windows Shared Memory (< 0.001 ms)
+        updateFft(fftOutputDb, FFT_SIZE);
     }
 
     void updateFft(const float* fftDb, int size) {
@@ -139,7 +216,6 @@ namespace shm_manager {
 
         if (packet.contains("payloadHex") && packet["payloadHex"].is_string()) {
             std::string hex = packet["payloadHex"];
-            // parse hex bytes into p.payload
             size_t pLen = 0;
             for (size_t i = 0; i + 1 < hex.size() && pLen < sizeof(p.payload); i++) {
                 if (hex[i] == ' ') continue;

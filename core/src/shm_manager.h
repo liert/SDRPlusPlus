@@ -62,6 +62,8 @@ namespace shm_manager {
     bool init();
     void cleanup();
 
+    // High-performance IQ FFT processing into Shared Memory
+    void processIqSamples(const dsp::complex_t* samples, int count, double sampleRate);
     void updateFft(const float* fftDb, int size);
     void pushPacket(const nlohmann::json& packet);
     void updateState(bool running, const std::string& sourceName, double centerFreq, double sampleRate, int lna, int vga, bool amp, bool biasT, const std::string& serial);

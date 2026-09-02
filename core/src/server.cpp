@@ -1,6 +1,5 @@
 #include "server.h"
 #include "core.h"
-#include "web_server.h"
 #include "shm_manager.h"
 #include <utils/flog.h>
 #include <version.h>
@@ -11,7 +10,6 @@
 #include <gui/smgui.h>
 #include <utils/optionlist.h>
 #include "dsp/sink/handler_sink.h"
-#include <zstd.h>
 
 #if __has_include(<libhackrf/hackrf.h>)
 #include <libhackrf/hackrf.h>
@@ -23,34 +21,9 @@ namespace server {
     dsp::stream<dsp::complex_t> dummyInput;
     dsp::sink::Handler<dsp::complex_t> sampleHandler;
 
-    net::Conn client;
-    uint8_t* rbuf = NULL;
-    uint8_t* sbuf = NULL;
-    uint8_t* bbuf = NULL;
-
-    PacketHeader* r_pkt_hdr = NULL;
-    uint8_t* r_pkt_data = NULL;
-    CommandHeader* r_cmd_hdr = NULL;
-    uint8_t* r_cmd_data = NULL;
-
-    PacketHeader* s_pkt_hdr = NULL;
-    uint8_t* s_pkt_data = NULL;
-    CommandHeader* s_cmd_hdr = NULL;
-    uint8_t* s_cmd_data = NULL;
-
-    PacketHeader* bb_pkt_hdr = NULL;
-    uint8_t* bb_pkt_data = NULL;
-
-    SmGui::DrawListElem dummyElem;
-
-    ZSTD_CCtx* cctx;
-
-    net::Listener listener;
-
     OptionList<std::string, std::string> sourceList;
     int sourceId = 0;
     bool running = false;
-    bool compression = false;
     double sampleRate = 8000000.0;
     double centerFreq = 2400000000.0;
     int lnaGain = 32;
@@ -58,26 +31,12 @@ namespace server {
     bool ampEnable = false;
     bool biasTEnable = false;
 
-    // Single-reader DSP sample handler: Zero-Deadlock, Full-Throughput Stream Pipeline
+    // Single-reader DSP sample handler: Zero-Deadlock, Ultra-Fast Shared Memory Pipeline
     static void _mainSampleHandler(dsp::complex_t* data, int count, void* ctx) {
         if (!data || count <= 0) return;
 
-        // 1. Process and broadcast real-time FFT spectrum to WebUI WebSocket clients
-        web_server::processIqSamples(data, count, sampleRate);
-
-        // 2. Stream to legacy TCP client if connected
-        if (client && client->isOpen()) {
-            if (compression) {
-                bb_pkt_hdr->type = PACKET_TYPE_BASEBAND_COMPRESSED;
-                bb_pkt_hdr->size = sizeof(PacketHeader) + (uint32_t)ZSTD_compressCCtx(cctx, &bbuf[sizeof(PacketHeader)], SERVER_MAX_PACKET_SIZE-sizeof(PacketHeader), data, count * sizeof(dsp::complex_t), 1);
-            }
-            else {
-                bb_pkt_hdr->type = PACKET_TYPE_BASEBAND;
-                bb_pkt_hdr->size = sizeof(PacketHeader) + count * sizeof(dsp::complex_t);
-                memcpy(&bbuf[sizeof(PacketHeader)], data, count * sizeof(dsp::complex_t));
-            }
-            client->write(bb_pkt_hdr->size, bbuf);
-        }
+        // Process and write real-time FFT spectrum directly into Windows Shared Memory
+        shm_manager::processIqSamples(data, count, sampleRate);
     }
 
     static nlohmann::json queryHackRfDevices() {
@@ -103,31 +62,11 @@ namespace server {
     }
 
     int main() {
-        flog::info("=====| SDR++ C++ HEADLESS SERVER ENGINE |=====");
+        flog::info("=====| SDR++ C++ NATIVE SHARED MEMORY CORE ENGINE |=====");
 
         // Init DSP Pipeline with Single Reader (zero deadlock)
         sampleHandler.init(&dummyInput, _mainSampleHandler, NULL);
         sampleHandler.start();
-
-        rbuf = new uint8_t[SERVER_MAX_PACKET_SIZE];
-        sbuf = new uint8_t[SERVER_MAX_PACKET_SIZE];
-        bbuf = new uint8_t[SERVER_MAX_PACKET_SIZE];
-
-        // Initialize headers
-        r_pkt_hdr = (PacketHeader*)rbuf;
-        r_pkt_data = &rbuf[sizeof(PacketHeader)];
-        r_cmd_hdr = (CommandHeader*)r_pkt_data;
-        r_cmd_data = &rbuf[sizeof(PacketHeader) + sizeof(CommandHeader)];
-
-        s_pkt_hdr = (PacketHeader*)sbuf;
-        s_pkt_data = &sbuf[sizeof(PacketHeader)];
-        s_cmd_hdr = (CommandHeader*)s_pkt_data;
-        s_cmd_data = &sbuf[sizeof(PacketHeader) + sizeof(CommandHeader)];
-
-        bb_pkt_hdr = (PacketHeader*)bbuf;
-        bb_pkt_data = &bbuf[sizeof(PacketHeader)];
-
-        cctx = ZSTD_createCCtx();
 
         // Load config
         core::configManager.acquire();
@@ -203,9 +142,6 @@ namespace server {
         } else if (!selected && !list.empty()) {
             sigpath::sourceManager.selectSource(list[0]);
         }
-
-        std::string host = (std::string)core::args["addr"];
-        int port = (int)core::args["port"];
 
         auto handleCmd = [](const std::string& cmd, const nlohmann::json& params) -> nlohmann::json {
             nlohmann::json res;
@@ -327,18 +263,7 @@ namespace server {
         shm_manager::setCommandHandler(handleCmd);
         shm_manager::updateState(running, sigpath::sourceManager.getSelectedSource(), centerFreq, sampleRate, lnaGain, vgaGain, ampEnable, biasTEnable, "");
 
-        web_server::setCommandHandler(handleCmd);
-        web_server::start(port, host);
-
-        // Start legacy TCP listener
-        try {
-            listener = net::listen(host, port + 1);
-            if (listener) {
-                listener->acceptAsync(_clientHandler, NULL);
-            }
-        } catch (...) {}
-
-        flog::info("🚀 SDR++ C++ Backend Engine is READY (SHM + WS {0}:{1})", host, port);
+        flog::info("🚀 SDR++ C++ Native Core Engine is READY (Pure Windows Shared Memory IPC)");
         while(1) {
             shm_manager::checkCommands();
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -347,62 +272,8 @@ namespace server {
         return 0;
     }
 
-    void _clientHandler(net::Conn conn, void* ctx) {
-        if (client && client->isOpen()) {
-            conn->close();
-            if (listener) listener->acceptAsync(_clientHandler, NULL);
-            return;
-        }
-
-        client = std::move(conn);
-        client->readAsync(sizeof(PacketHeader), rbuf, _packetHandler, NULL);
-
-        sigpath::sourceManager.stop();
-        compression = false;
-
-        sendSampleRate(sampleRate);
-        if (listener) listener->acceptAsync(_clientHandler, NULL);
-    }
-
-    void _packetHandler(int count, uint8_t* buf, void* ctx) {
-        PacketHeader* hdr = (PacketHeader*)buf;
-        int len = 0;
-        int read = 0;
-        int goal = hdr->size - sizeof(PacketHeader);
-        while (len < goal) {
-            read = client->read(goal - len, &buf[sizeof(PacketHeader) + len]);
-            if (read < 0) { return; };
-            len += read;
-        }
-
-        if (hdr->type == PACKET_TYPE_COMMAND && hdr->size >= sizeof(PacketHeader) + sizeof(CommandHeader)) {
-            CommandHeader* chdr = (CommandHeader*)&buf[sizeof(PacketHeader)];
-            commandHandler((Command)chdr->cmd, &buf[sizeof(PacketHeader) + sizeof(CommandHeader)], hdr->size - sizeof(PacketHeader) - sizeof(CommandHeader));
-        }
-        else {
-            sendError(ERROR_INVALID_PACKET);
-        }
-
-        client->readAsync(sizeof(PacketHeader), rbuf, _packetHandler, NULL);
-    }
-
     void setInput(dsp::stream<dsp::complex_t>* stream) {
         sampleHandler.setInput(stream);
-    }
-
-    void commandHandler(Command cmd, uint8_t* data, int len) {
-        if (cmd == COMMAND_START) {
-            sigpath::sourceManager.start();
-            running = true;
-        }
-        else if (cmd == COMMAND_STOP) {
-            sigpath::sourceManager.stop();
-            running = false;
-        }
-        else if (cmd == COMMAND_SET_FREQUENCY && len == 8) {
-            sigpath::sourceManager.tune(*(double*)data);
-            sendCommandAck(COMMAND_SET_FREQUENCY, 0);
-        }
     }
 
     void renderUI(SmGui::DrawList* dl, std::string diffId, SmGui::DrawListElem diffValue) {}

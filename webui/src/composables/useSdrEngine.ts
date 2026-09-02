@@ -18,17 +18,15 @@ export const totalPacketsCount = ref(0)
 export const validCrcCount = ref(0)
 export const currentLang = ref<'zh' | 'en'>('zh')
 
-export const isTauriEnv = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
+export const isTauriEnv = true
 
 // C++ Backend Connection State & Device Management
 export const isBackendConnected = ref(false)
-export const backendStatusText = ref(isTauriEnv ? '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)' : '未连接 C++ 后端 (启动: ./sdrpp.exe -s -p 5259)')
+export const backendStatusText = ref('⚡ Windows 原生共享内存直通 (IPC Zero-Copy)')
 export const availableSources = ref<string[]>(['HackRF', 'File Source', 'RTL-SDR', 'Simulator'])
 export const availableDevices = ref<BackendDeviceInfo[]>([])
 export const isScanningDevices = ref(false)
 
-let backendWs: WebSocket | null = null
-let reconnectTimer: number | null = null
 let shmPollTimer: number | null = null
 
 // Source Configuration
@@ -99,11 +97,9 @@ export const crcSuccessRate = computed(() => {
  * Initialize High-Performance Windows Shared Memory (Zero-Copy IPC)
  */
 export function initShmEngine() {
-  if (!isTauriEnv) return false
-
   let isPolling = false
 
-  // 1. High-speed zero-latency Shared Memory FFT polling loop
+  // 1. High-speed zero-latency Shared Memory FFT polling loop (60 FPS)
   const pollShmFft = async () => {
     if (isPolling) return
     isPolling = true
@@ -121,13 +117,11 @@ export function initShmEngine() {
         }
       }
     } catch (e) {
-      // Backend not yet ready or mapping pending
+      // Backend mapping not yet ready
     } finally {
       isPolling = false
     }
-    if (isTauriEnv) {
-      requestAnimationFrame(pollShmFft)
-    }
+    requestAnimationFrame(pollShmFft)
   }
 
   requestAnimationFrame(pollShmFft)
@@ -141,6 +135,17 @@ export function initShmEngine() {
           isBackendConnected.value = true
           isPlaying.value = st.running
           backendStatusText.value = '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)'
+
+          if (st.deviceSerial && availableDevices.value.length === 0) {
+            availableDevices.value = [{
+              serial: st.deviceSerial,
+              name: `HackRF One (${st.deviceSerial.slice(-8)})`,
+              index: 0
+            }]
+            if (!sourceConfig.deviceSerial) {
+              sourceConfig.deviceSerial = st.deviceSerial
+            }
+          }
 
           if (Array.isArray(st.packets) && st.packets.length > 0) {
             for (const pkt of st.packets) {
@@ -162,168 +167,48 @@ export function initShmEngine() {
   return true
 }
 
-/**
- * Connect to C++ Backend Server via WebSocket (ws://127.0.0.1:5259/ws)
- */
-export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
-  if (typeof window === 'undefined') return
-
-  if (isTauriEnv) {
-    initShmEngine()
-  }
-
-  if (backendWs && (backendWs.readyState === WebSocket.OPEN || backendWs.readyState === WebSocket.CONNECTING)) {
-    return
-  }
-
-  try {
-    backendWs = new WebSocket(url)
-    backendWs.binaryType = 'arraybuffer'
-
-    backendWs.onopen = () => {
-      isBackendConnected.value = true
-      backendStatusText.value = '⚡ C++ 后端已连接 (高性能 DSP 引擎)'
-      console.log('Connected to SDR++ C++ Backend Engine over WebSocket')
-      
-      // Initialize parameter sync on connect (DO NOT auto start, let user start manually!)
-      const sname = sourceConfig.type === 'hackrf' ? 'HackRF' : (sourceConfig.type === 'file' ? 'File Source' : 'RTL-SDR')
-      sendBackendCommand('set_source', { source: sname })
-      sendBackendCommand('set_freq', { freq: sourceConfig.centerFreqHz })
-      sendBackendCommand('set_samplerate', { sampleRate: sourceConfig.sampleRateHz })
-      sendBackendCommand('set_gain', {
-        lna: sourceConfig.lnaGain,
-        vga: sourceConfig.vgaGain,
-        amp: sourceConfig.ampEnable,
-        biasT: sourceConfig.biasT
-      })
-      sendBackendCommand('get_devices')
-      sendBackendCommand('get_sources')
-      sendBackendCommand('get_status')
-    }
-
-    backendWs.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        // Binary FFT frame: Float32Array calculated in C++ by FFTW3 / Volk
-        const floats = new Float32Array(event.data)
-        if (floats.length === 1024) {
-          liveHackRfFft.set(floats)
-          if (!hasLiveHackRfData.value) {
-            hasLiveHackRfData.value = true
-          }
-        }
-      } else if (typeof event.data === 'string') {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'packet') {
-            // Real C++ decoded packet frame from flrc_decoder
-            packetHistory.value.unshift(msg as DecodedPacket)
-            if (packetHistory.value.length > 200) {
-              packetHistory.value.pop()
-            }
-            totalPacketsCount.value++
-            if (msg.crcValid) {
-              validCrcCount.value++
-            }
-          } else if (msg.type === 'devices' || msg.devices) {
-            // Update device list from backend
-            if (Array.isArray(msg.devices)) {
-              availableDevices.value = msg.devices
-              if (availableDevices.value.length > 0 && !sourceConfig.deviceSerial) {
-                sourceConfig.deviceSerial = availableDevices.value[0].serial
-              }
-            }
-            isScanningDevices.value = false
-          } else if (msg.sources) {
-            if (Array.isArray(msg.sources)) {
-              availableSources.value = msg.sources
-            }
-          } else if (msg.type === 'status' || msg.status === 'ok') {
-            if (msg.running !== undefined) {
-              isPlaying.value = msg.running
-            }
-            if (msg.devices && Array.isArray(msg.devices)) {
-              availableDevices.value = msg.devices
-            }
-          }
-        } catch (e) {
-          console.warn('JSON parsing error:', e)
-        }
-      }
-    }
-
-    backendWs.onclose = () => {
-      isBackendConnected.value = false
-      backendStatusText.value = '未连接 C++ 后端 (启动: ./sdrpp.exe -s -p 5259)'
-      backendWs = null
-      scheduleReconnect()
-    }
-
-    backendWs.onerror = () => {
-      isBackendConnected.value = false
-    }
-  } catch (err) {
-    isBackendConnected.value = false
-    scheduleReconnect()
-  }
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer) clearTimeout(reconnectTimer)
-  reconnectTimer = window.setTimeout(() => {
-    connectBackendWs()
-  }, 2500)
-}
-
 export function sendBackendCommand(cmd: string, params: Record<string, any> = {}) {
-  if (isTauriEnv) {
-    try {
-      invoke('send_shm_cmd', { cmd, params })
-    } catch (e) {}
-  } else if (backendWs && backendWs.readyState === WebSocket.OPEN) {
-    backendWs.send(JSON.stringify({ cmd, ...params }))
+  try {
+    invoke('send_shm_cmd', { cmd, params })
+  } catch (e) {
+    console.warn('IPC command send failed:', e)
   }
 }
 
 export function refreshBackendDevices() {
   isScanningDevices.value = true
   sendBackendCommand('get_devices')
-  setTimeout(() => { isScanningDevices.value = false }, 1500)
+  setTimeout(() => { isScanningDevices.value = false }, 1000)
 }
 
-// Auto-connect on startup
+// Auto-start Shared Memory IPC on module load
 if (typeof window !== 'undefined') {
-  connectBackendWs()
+  initShmEngine()
 }
 
-// Debounced Parameter Sync to prevent USB/socket congestion
+// Debounced Parameter Sync to prevent USB congestion
 let freqDebounceTimer: number | null = null
 watch(() => sourceConfig.centerFreqHz, (hz) => {
   if (freqDebounceTimer) clearTimeout(freqDebounceTimer)
   freqDebounceTimer = window.setTimeout(() => {
-    if (isBackendConnected.value) {
-      sendBackendCommand('set_freq', { freq: hz })
-    }
+    sendBackendCommand('set_freq', { freq: hz })
   }, 40)
 })
 
 watch(() => sourceConfig.sampleRateHz, (hz) => {
-  if (isBackendConnected.value) {
-    sendBackendCommand('set_samplerate', { sampleRate: hz })
-  }
+  sendBackendCommand('set_samplerate', { sampleRate: hz })
 })
 
 let gainDebounceTimer: number | null = null
 function pushGainsToBackend() {
   if (gainDebounceTimer) clearTimeout(gainDebounceTimer)
   gainDebounceTimer = window.setTimeout(() => {
-    if (isBackendConnected.value) {
-      sendBackendCommand('set_gain', {
-        lna: sourceConfig.lnaGain,
-        vga: sourceConfig.vgaGain,
-        amp: sourceConfig.ampEnable,
-        biasT: sourceConfig.biasT
-      })
-    }
+    sendBackendCommand('set_gain', {
+      lna: sourceConfig.lnaGain,
+      vga: sourceConfig.vgaGain,
+      amp: sourceConfig.ampEnable,
+      biasT: sourceConfig.biasT
+    })
   }, 30)
 }
 
@@ -333,20 +218,18 @@ watch(() => sourceConfig.ampEnable, pushGainsToBackend)
 watch(() => sourceConfig.biasT, pushGainsToBackend)
 
 watch(() => sourceConfig.deviceSerial, (serial) => {
-  if (isBackendConnected.value && serial) {
+  if (serial) {
     sendBackendCommand('set_device', { serial })
   }
 })
 
 // Switch source type handler
 watch(() => sourceConfig.type, (newType) => {
-  if (isBackendConnected.value) {
-    const sname = newType === 'hackrf' ? 'HackRF' : (newType === 'file' ? 'File Source' : 'RTL-SDR')
-    sendBackendCommand('set_source', { source: sname })
-  }
+  const sname = newType === 'hackrf' ? 'HackRF' : (newType === 'file' ? 'File Source' : 'RTL-SDR')
+  sendBackendCommand('set_source', { source: sname })
   if (isPlaying.value) {
-    stopEngine()
-    startEngine()
+    sendBackendCommand('stop')
+    sendBackendCommand('start')
   }
 })
 
@@ -357,7 +240,7 @@ export function checkVfoSignalLock() {
   const vfoMin = vfo.offsetHz - vfo.bandwidthHz / 2
   const vfoMax = vfo.offsetHz + vfo.bandwidthHz / 2
 
-  if (isBackendConnected.value || (sourceConfig.type === 'hackrf' && hasLiveHackRfData.value)) {
+  if (hasLiveHackRfData.value) {
     // Analyze live FFT power in the VFO frequency passband
     const fftLen = liveHackRfFft.length
     const binStart = Math.max(0, Math.min(fftLen - 1, Math.floor((0.5 + vfoMin / sourceConfig.sampleRateHz) * fftLen)))
@@ -381,36 +264,8 @@ export function checkVfoSignalLock() {
       return { locked: true, snr: Math.min(32.0, Math.max(6.0, snr)), centerOffsetKhz: devKhz, isChannel1: vfo.offsetHz >= 0 }
     }
     return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
-  } else if (sourceConfig.type === 'file') {
-    // Channel 1: +1.40 MHz, Channel 2: -1.60 MHz
-    const ch1Center = 1400000, ch1Min = 800000, ch1Max = 2000000
-    const ch2Center = -1600000, ch2Min = -2200000, ch2Max = -1000000
-
-    const overlap1 = Math.max(0, Math.min(vfoMax, ch1Max) - Math.max(vfoMin, ch1Min))
-    const overlap2 = Math.max(0, Math.min(vfoMax, ch2Max) - Math.max(vfoMin, ch2Min))
-
-    if (overlap1 > 350000) {
-      const ratio = overlap1 / 1200000
-      const devKhz = (vfo.offsetHz - ch1Center) / 1000
-      return { locked: true, snr: ratio * 28.0, centerOffsetKhz: devKhz, isChannel1: true }
-    }
-
-    if (overlap2 > 350000) {
-      const ratio = overlap2 / 1200000
-      const devKhz = (vfo.offsetHz - ch2Center) / 1000
-      return { locked: true, snr: ratio * 24.0, centerOffsetKhz: devKhz, isChannel1: false }
-    }
-
-    return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
   } else {
-    // Offline / Standby mode
-    const ch1Min = -600000, ch1Max = 600000
-    const overlap = Math.max(0, Math.min(vfoMax, ch1Max) - Math.max(vfoMin, ch1Min))
-    if (overlap > 300000) {
-      const ratio = overlap / 1200000
-      const devKhz = vfo.offsetHz / 1000
-      return { locked: true, snr: Math.min(30.0, ratio * 22.0), centerOffsetKhz: devKhz, isChannel1: true }
-    }
+    // Standby mode
     return { locked: false, snr: 0, centerOffsetKhz: 0, isChannel1: false }
   }
 }
@@ -419,21 +274,9 @@ export const isVfoLockedOnSignal = computed(() => {
   return checkVfoSignalLock().locked
 })
 
-let simTimer: number | null = null
-let packetGenTimer: number | null = null
-let playbackProgressTimer: number | null = null
-let playDurationSec = 0
-
 export function togglePlay() {
   isPlaying.value = !isPlaying.value
-  if (isBackendConnected.value) {
-    sendBackendCommand(isPlaying.value ? 'start' : 'stop')
-  }
-  if (isPlaying.value) {
-    startEngine()
-  } else {
-    stopEngine()
-  }
+  sendBackendCommand(isPlaying.value ? 'start' : 'stop')
 }
 
 export function clearPackets() {
@@ -463,80 +306,4 @@ export function applyPreset(presetName: string) {
     demodConfig.deviation = 65000
     demodConfig.filterCutoff = 150000
   }
-}
-
-function startEngine() {
-  if (simTimer) clearInterval(simTimer)
-  if (packetGenTimer) clearInterval(packetGenTimer)
-  if (playbackProgressTimer) clearInterval(playbackProgressTimer)
-
-  playDurationSec = 0
-
-  if (isBackendConnected.value) {
-    return
-  }
-
-  if (sourceConfig.type === 'file') {
-    playbackProgressTimer = window.setInterval(() => {
-      if (!isPlaying.value) return
-      playDurationSec += 0.5
-      if (!sourceConfig.loop && playDurationSec >= 6.0) {
-        stopEngine()
-        isPlaying.value = false
-      }
-    }, 500)
-  }
-
-  // Fallback simulator loop when C++ backend is not connected
-  packetGenTimer = window.setInterval(() => {
-    if (!isPlaying.value || isBackendConnected.value) return
-
-    const lock = checkVfoSignalLock()
-    if (!lock.locked) return
-
-    const now = new Date()
-    const timeStr = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0')
-    const isValid = Math.random() < Math.min(0.98, lock.snr / 25.0)
-    const id = ++totalPacketsCount.value
-    if (isValid) validCrcCount.value++
-
-    const isPairing = id % 25 === 0
-    let payload = ''
-    let ascii = ''
-    let sync = isPairing ? '54313253' : (lock.isChannel1 ? '1400701E' : '5BDEB350')
-    let mask = isPairing ? '0x66' : '0x99'
-
-    if (isPairing) {
-      payload = '11 22 33 44 55 9A 8B 7C 6D ' + Array.from({ length: 15 }, () => Math.floor(Math.random() * 255).toString(16).padStart(2, '0').toUpperCase()).join(' ')
-      ascii = '..3DU.....'
-    } else {
-      payload = `B1 78 1E 07 81 E0 78 78 D2 D2 1E 1E 24 D2 0A 54 2B 41 4E 47 4C 45 20 2D 50 30 0D 00 00 00 00 3B`
-      ascii = '\nT+ANGLE -P0\r'
-    }
-
-    const packet: DecodedPacket = {
-      id,
-      timestamp: timeStr,
-      freqOffsetKhz: +(vfo.offsetHz / 1000 + lock.centerOffsetKhz + (Math.random() * 4 - 2)).toFixed(1),
-      syncWord: '0x' + sync,
-      mask,
-      payloadHex: payload,
-      payloadAscii: ascii,
-      hwCrc: '0x' + Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0').toUpperCase(),
-      crcValid: isValid,
-      score: +(Math.max(4.0, lock.snr / 2.0 + Math.random() * 4)).toFixed(1),
-      length: isPairing ? 42 : 32
-    }
-
-    packetHistory.value.unshift(packet)
-    if (packetHistory.value.length > 200) {
-      packetHistory.value.pop()
-    }
-  }, 120)
-}
-
-function stopEngine() {
-  if (simTimer) { clearInterval(simTimer); simTimer = null }
-  if (packetGenTimer) { clearInterval(packetGenTimer); packetGenTimer = null }
-  if (playbackProgressTimer) { clearInterval(playbackProgressTimer); playbackProgressTimer = null }
 }
