@@ -80,14 +80,21 @@ const char* bandwidthsTxt = "1.75MHz\0"
 
 class HackRFSourceModule : public ModuleManager::Instance {
 public:
+    inline static HackRFSourceModule* instance = nullptr;
+
     HackRFSourceModule(std::string name) {
         this->name = name;
+        instance = this;
 
         hackrf_init();
 
-        // Select the last samplerate option
-        sampleRate = 2000000;
-        srId = 6;
+        sampleRate = 8000000;
+        srId = 2; // 8 MSPS
+
+        lna = 32;
+        vga = 20;
+        amp = false;
+        biasT = false;
 
         handler.ctx = this;
         handler.selectHandler = menuSelected;
@@ -381,6 +388,45 @@ private:
         }
     }
 
+public:
+    static void setLnaGain(float gain) {
+        if (!instance) return;
+        instance->lna = gain;
+        if (instance->running && instance->openDev) {
+            hackrf_set_lna_gain(instance->openDev, (uint32_t)gain);
+        }
+    }
+    static void setVgaGain(float gain) {
+        if (!instance) return;
+        instance->vga = gain;
+        if (instance->running && instance->openDev) {
+            hackrf_set_vga_gain(instance->openDev, (uint32_t)gain);
+        }
+    }
+    static void setAmp(bool amp) {
+        if (!instance) return;
+        instance->amp = amp;
+        if (instance->running && instance->openDev) {
+            hackrf_set_amp_enable(instance->openDev, amp ? 1 : 0);
+        }
+    }
+    static void setBiasT(bool biasT) {
+        if (!instance) return;
+        instance->biasT = biasT;
+        if (instance->running && instance->openDev) {
+            hackrf_set_antenna_enable(instance->openDev, biasT ? 1 : 0);
+        }
+    }
+    static void setSampleRateValue(int sr) {
+        if (!instance) return;
+        instance->sampleRate = sr;
+        if (instance->running && instance->openDev) {
+            hackrf_set_sample_rate(instance->openDev, sr);
+            hackrf_set_baseband_filter_bandwidth(instance->openDev, hackrf_compute_baseband_filter_bw(sr * 0.75));
+        }
+    }
+
+private:
     static int callback(hackrf_transfer* transfer) {
         HackRFSourceModule* _this = (HackRFSourceModule*)transfer->rx_ctx;
         volk_8i_s32f_convert_32f((float*)_this->stream.writeBuf, (int8_t*)transfer->buffer, 128.0f, transfer->valid_length);
@@ -433,4 +479,13 @@ MOD_EXPORT void _DELETE_INSTANCE_(ModuleManager::Instance* instance) {
 MOD_EXPORT void _END_() {
     config.disableAutoSave();
     config.save();
+}
+
+extern "C" {
+    MOD_EXPORT void hackrf_apply_gain(float lna, float vga, bool amp, bool biasT) {
+        HackRFSourceModule::setLnaGain(lna);
+        HackRFSourceModule::setVgaGain(vga);
+        HackRFSourceModule::setAmp(amp);
+        HackRFSourceModule::setBiasT(biasT);
+    }
 }

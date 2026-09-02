@@ -187,10 +187,19 @@ namespace server {
             sourceList.define(name, name);
         }
 
-        if (sourceList.keyExists(sourceName)) {
+        bool selected = false;
+        for (auto& name : list) {
+            if (name == "HackRF" || name.find("HackRF") != std::string::npos || name.find("hackrf") != std::string::npos) {
+                sourceId = sourceList.keyId(name);
+                sigpath::sourceManager.selectSource(name);
+                selected = true;
+                break;
+            }
+        }
+        if (!selected && sourceList.keyExists(sourceName)) {
             sourceId = sourceList.keyId(sourceName);
             sigpath::sourceManager.selectSource(sourceList[sourceId]);
-        } else if (!list.empty()) {
+        } else if (!selected && !list.empty()) {
             sigpath::sourceManager.selectSource(list[0]);
         }
 
@@ -201,10 +210,24 @@ namespace server {
         web_server::setCommandHandler([](const std::string& cmd, const nlohmann::json& params) -> nlohmann::json {
             nlohmann::json res;
             if (cmd == "start") {
+                if (sigpath::sourceManager.getSelectedSource().empty()) {
+                    for (auto& name : sigpath::sourceManager.getSourceNames()) {
+                        if (name.find("HackRF") != std::string::npos || name.find("hackrf") != std::string::npos) {
+                            sigpath::sourceManager.selectSource(name);
+                            break;
+                        }
+                    }
+                }
                 sigpath::sourceManager.start();
+                typedef void (*hackrf_gain_fn)(float, float, bool, bool);
+                if (core::moduleManager.modules.find("hackrf_source") != core::moduleManager.modules.end()) {
+                    auto fn = (hackrf_gain_fn)GetProcAddress((HMODULE)core::moduleManager.modules["hackrf_source"].handle, "hackrf_apply_gain");
+                    if (fn) fn((float)lnaGain, (float)vgaGain, ampEnable, biasTEnable);
+                }
                 running = true;
                 res["status"] = "ok";
                 res["running"] = true;
+                res["source"] = sigpath::sourceManager.getSelectedSource();
             } else if (cmd == "stop") {
                 sigpath::sourceManager.stop();
                 running = false;
@@ -227,6 +250,13 @@ namespace server {
                 if (params.contains("vga")) vgaGain = params["vga"];
                 if (params.contains("amp")) ampEnable = params["amp"];
                 if (params.contains("biasT")) biasTEnable = params["biasT"];
+
+                typedef void (*hackrf_gain_fn)(float, float, bool, bool);
+                if (core::moduleManager.modules.find("hackrf_source") != core::moduleManager.modules.end()) {
+                    auto fn = (hackrf_gain_fn)GetProcAddress((HMODULE)core::moduleManager.modules["hackrf_source"].handle, "hackrf_apply_gain");
+                    if (fn) fn((float)lnaGain, (float)vgaGain, ampEnable, biasTEnable);
+                }
+
                 res["status"] = "ok";
                 res["lna"] = lnaGain;
                 res["vga"] = vgaGain;
@@ -234,11 +264,18 @@ namespace server {
                 res["biasT"] = biasTEnable;
             } else if (cmd == "set_source" && params.contains("source")) {
                 std::string sname = params["source"];
-                if (sourceList.keyExists(sname)) {
-                    sourceId = sourceList.keyId(sname);
-                    sigpath::sourceManager.selectSource(sname);
+                std::string matched = "";
+                for (auto& name : sigpath::sourceManager.getSourceNames()) {
+                    if (name == sname || name.find(sname) != std::string::npos || sname.find(name) != std::string::npos) {
+                        matched = name;
+                        break;
+                    }
+                }
+                if (!matched.empty()) {
+                    sourceId = sourceList.keyId(matched);
+                    sigpath::sourceManager.selectSource(matched);
                     res["status"] = "ok";
-                    res["source"] = sname;
+                    res["source"] = matched;
                 } else {
                     res["status"] = "error";
                     res["message"] = "Source not found";
