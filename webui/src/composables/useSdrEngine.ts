@@ -184,9 +184,8 @@ export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
       isBackendConnected.value = true
       backendStatusText.value = '⚡ C++ 后端已连接 (高性能 DSP 引擎)'
       console.log('Connected to SDR++ C++ Backend Engine over WebSocket')
-      isPlaying.value = true
       
-      // Initialize parameter sync on connect
+      // Initialize parameter sync on connect (DO NOT auto start, let user start manually!)
       const sname = sourceConfig.type === 'hackrf' ? 'HackRF' : (sourceConfig.type === 'file' ? 'File Source' : 'RTL-SDR')
       sendBackendCommand('set_source', { source: sname })
       sendBackendCommand('set_freq', { freq: sourceConfig.centerFreqHz })
@@ -197,7 +196,6 @@ export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
         amp: sourceConfig.ampEnable,
         biasT: sourceConfig.biasT
       })
-      sendBackendCommand('start')
       sendBackendCommand('get_devices')
       sendBackendCommand('get_sources')
       sendBackendCommand('get_status')
@@ -281,8 +279,7 @@ export function sendBackendCommand(cmd: string, params: Record<string, any> = {}
     try {
       invoke('send_shm_cmd', { cmd, params })
     } catch (e) {}
-  }
-  if (backendWs && backendWs.readyState === WebSocket.OPEN) {
+  } else if (backendWs && backendWs.readyState === WebSocket.OPEN) {
     backendWs.send(JSON.stringify({ cmd, ...params }))
   }
 }

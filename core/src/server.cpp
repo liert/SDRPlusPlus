@@ -210,6 +210,12 @@ namespace server {
         auto handleCmd = [](const std::string& cmd, const nlohmann::json& params) -> nlohmann::json {
             nlohmann::json res;
             if (cmd == "start") {
+                if (running) {
+                    res["status"] = "ok";
+                    res["running"] = true;
+                    res["source"] = sigpath::sourceManager.getSelectedSource();
+                    return res;
+                }
                 if (sigpath::sourceManager.getSelectedSource().empty()) {
                     for (auto& name : sigpath::sourceManager.getSourceNames()) {
                         if (name.find("HackRF") != std::string::npos || name.find("hackrf") != std::string::npos) {
@@ -229,6 +235,11 @@ namespace server {
                 res["running"] = true;
                 res["source"] = sigpath::sourceManager.getSelectedSource();
             } else if (cmd == "stop") {
+                if (!running) {
+                    res["status"] = "ok";
+                    res["running"] = false;
+                    return res;
+                }
                 sigpath::sourceManager.stop();
                 running = false;
                 res["status"] = "ok";
