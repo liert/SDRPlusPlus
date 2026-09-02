@@ -146,27 +146,41 @@ namespace flog {
         auto nowt = std::chrono::system_clock::to_time_t(now);
         auto nowc = std::localtime(&nowt); // TODO: This is not threadsafe
 
-        // Write to output
+        // Write to output and persistent log file
         {
             std::lock_guard<std::mutex> lck(outMtx);
+
+            static FILE* logFile = nullptr;
+            if (!logFile) {
+                logFile = fopen("sdrpp_backend.log", "a");
+            }
+            if (logFile) {
+                fprintf(logFile, "[%02d/%02d/%02d %02d:%02d:%02d] [%s] %s\n",
+                        nowc->tm_mday, nowc->tm_mon + 1, nowc->tm_year + 1900,
+                        nowc->tm_hour, nowc->tm_min, nowc->tm_sec,
+                        TYPE_STR[type], out.c_str());
+                fflush(logFile);
+            }
+
 #if defined(_WIN32)
-            // Get output handle and return if invalid
+            // Get output handle
             int wOutStream = (type == TYPE_ERROR) ? STD_ERROR_HANDLE  : STD_OUTPUT_HANDLE;
             HANDLE conHndl = GetStdHandle(wOutStream);
-            if (!conHndl || conHndl == INVALID_HANDLE_VALUE) { return; }
-
-            // Print beginning of log line
-            SetConsoleTextAttribute(conHndl, COLOR_WHITE);
-            fprintf(outStream, "[%02d/%02d/%02d %02d:%02d:%02d.%03d] [", nowc->tm_mday, nowc->tm_mon + 1, nowc->tm_year + 1900, nowc->tm_hour, nowc->tm_min, nowc->tm_sec, 0);
-
-            // Switch color to the log color, print log type and 
-            SetConsoleTextAttribute(conHndl, TYPE_COLORS[type]);
-            fputs(TYPE_STR[type], outStream);
-            
-
-            // Switch back to default color and print rest of log string
-            SetConsoleTextAttribute(conHndl, COLOR_WHITE);
-            fprintf(outStream, "] %s\n", out.c_str());
+            if (conHndl && conHndl != INVALID_HANDLE_VALUE) {
+                SetConsoleTextAttribute(conHndl, COLOR_WHITE);
+                fprintf(outStream, "[%02d/%02d/%02d %02d:%02d:%02d.%03d] [", nowc->tm_mday, nowc->tm_mon + 1, nowc->tm_year + 1900, nowc->tm_hour, nowc->tm_min, nowc->tm_sec, 0);
+                SetConsoleTextAttribute(conHndl, TYPE_COLORS[type]);
+                fputs(TYPE_STR[type], outStream);
+                SetConsoleTextAttribute(conHndl, COLOR_WHITE);
+                fprintf(outStream, "] %s\n", out.c_str());
+                fflush(outStream);
+            } else {
+                fprintf(outStream, "[%02d/%02d/%02d %02d:%02d:%02d] [%s] %s\n",
+                        nowc->tm_mday, nowc->tm_mon + 1, nowc->tm_year + 1900,
+                        nowc->tm_hour, nowc->tm_min, nowc->tm_sec,
+                        TYPE_STR[type], out.c_str());
+                fflush(outStream);
+            }
 #elif defined(__ANDROID__)
             // Print format string
             __android_log_print(TYPE_PRIORITIES[type], FLOG_ANDROID_TAG, COLOR_WHITE "[%02d/%02d/%02d %02d:%02d:%02d.%03d] [%s%s" COLOR_WHITE "] %s\n",

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import {
   isPlaying,
   togglePlay,
@@ -19,8 +20,12 @@ import {
   Cpu,
   Layers,
   Maximize2,
-  Zap
+  Zap,
+  Terminal
 } from 'lucide-vue-next'
+import LogViewerModal from './LogViewerModal.vue'
+
+const showLogModal = ref(false)
 
 const props = defineProps<{
   activeView: 'rf' | 'protocol' | 'split'
@@ -55,7 +60,7 @@ function formatFreq(freqHz: number): string {
         <span>{{ isPlaying ? (currentLang === 'zh' ? '停止 (Stop)' : 'Stop') : (currentLang === 'zh' ? '启动 (Play)' : 'Start') }}</span>
       </button>
 
-      <!-- Source & C++ Backend Status Badge -->
+      <!-- Source & C++ Backend Status Badge & Log Trigger -->
       <div class="hidden sm:flex items-center gap-2 bg-sdr-dark/80 border border-sdr-border px-2.5 py-1 rounded text-xs font-mono">
         <Radio class="w-3.5 h-3.5 text-cyan-400" />
         <span class="text-slate-400 font-sans">源:</span>
@@ -69,10 +74,20 @@ function formatFreq(freqHz: number): string {
           <Zap class="w-3 h-3 text-amber-400 animate-pulse" />
           <span>{{ isPlaying ? 'C++ 后端采集中' : 'C++ 后端已连接' }}</span>
         </span>
-        <span v-else class="text-slate-500 flex items-center gap-1">
-          <span class="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+        <span v-else class="text-rose-400 font-bold flex items-center gap-1">
+          <span class="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping"></span>
           <span>C++ 后端离线</span>
         </span>
+
+        <!-- View Logs Button -->
+        <button
+          @click="showLogModal = true"
+          class="ml-1 px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 rounded text-[10px] flex items-center gap-1 transition-colors"
+          title="查看 C++ 后端日志"
+        >
+          <Terminal class="w-3 h-3 text-cyan-400" />
+          <span>日志</span>
+        </button>
       </div>
     </div>
 
@@ -144,4 +159,7 @@ function formatFreq(freqHz: number): string {
       </div>
     </div>
   </header>
+
+  <!-- Log Viewer Modal -->
+  <LogViewerModal v-if="showLogModal" @close="showLogModal = false" />
 </template>
