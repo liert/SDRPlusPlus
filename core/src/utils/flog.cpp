@@ -146,21 +146,9 @@ namespace flog {
         auto nowt = std::chrono::system_clock::to_time_t(now);
         auto nowc = std::localtime(&nowt); // TODO: This is not threadsafe
 
-        // Write to output and persistent log file
+        // Write to output stream (Tauri redirects stdout/stderr to sdrpp_backend.log)
         {
             std::lock_guard<std::mutex> lck(outMtx);
-
-            static FILE* logFile = nullptr;
-            if (!logFile) {
-                logFile = fopen("sdrpp_backend.log", "a");
-            }
-            if (logFile) {
-                fprintf(logFile, "[%02d/%02d/%02d %02d:%02d:%02d] [%s] %s\n",
-                        nowc->tm_mday, nowc->tm_mon + 1, nowc->tm_year + 1900,
-                        nowc->tm_hour, nowc->tm_min, nowc->tm_sec,
-                        TYPE_STR[type], out.c_str());
-                fflush(logFile);
-            }
 
 #if defined(_WIN32)
             // Get output handle
@@ -175,9 +163,9 @@ namespace flog {
                 fprintf(outStream, "] %s\n", out.c_str());
                 fflush(outStream);
             } else {
-                fprintf(outStream, "[%02d/%02d/%02d %02d:%02d:%02d] [%s] %s\n",
+                fprintf(outStream, "[%02d/%02d/%02d %02d:%02d:%02d.%03d] [%s] %s\n",
                         nowc->tm_mday, nowc->tm_mon + 1, nowc->tm_year + 1900,
-                        nowc->tm_hour, nowc->tm_min, nowc->tm_sec,
+                        nowc->tm_hour, nowc->tm_min, nowc->tm_sec, 0,
                         TYPE_STR[type], out.c_str());
                 fflush(outStream);
             }
