@@ -1,4 +1,5 @@
 import { ref, reactive, computed, watch } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import type {
   SourceConfig,
   DemodConfig,
@@ -17,15 +18,18 @@ export const totalPacketsCount = ref(0)
 export const validCrcCount = ref(0)
 export const currentLang = ref<'zh' | 'en'>('zh')
 
+export const isTauriEnv = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
+
 // C++ Backend Connection State & Device Management
 export const isBackendConnected = ref(false)
-export const backendStatusText = ref('未连接 C++ 后端 (启动: ./sdrpp.exe -s -p 5259)')
+export const backendStatusText = ref(isTauriEnv ? '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)' : '未连接 C++ 后端 (启动: ./sdrpp.exe -s -p 5259)')
 export const availableSources = ref<string[]>(['HackRF', 'File Source', 'RTL-SDR', 'Simulator'])
 export const availableDevices = ref<BackendDeviceInfo[]>([])
 export const isScanningDevices = ref(false)
 
 let backendWs: WebSocket | null = null
 let reconnectTimer: number | null = null
+let shmPollTimer: number | null = null
 
 // Source Configuration
 export const sourceConfig = reactive<SourceConfig>({
@@ -92,10 +96,76 @@ export const crcSuccessRate = computed(() => {
 })
 
 /**
+ * Initialize High-Performance Windows Shared Memory (Zero-Copy IPC)
+ */
+export function initShmEngine() {
+  if (!isTauriEnv) return false
+
+  // 1. High-speed zero-latency Shared Memory FFT polling loop
+  const pollShmFft = async () => {
+    try {
+      const res = await invoke<ArrayBuffer>('get_shm_fft')
+      if (res && res.byteLength === 4096) {
+        const floats = new Float32Array(res)
+        liveHackRfFft.set(floats)
+        if (!hasLiveHackRfData.value) {
+          hasLiveHackRfData.value = true
+        }
+        if (!isBackendConnected.value) {
+          isBackendConnected.value = true
+          backendStatusText.value = '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)'
+        }
+      }
+    } catch (e) {
+      // Backend not yet ready or mapping pending
+    }
+    if (isTauriEnv) {
+      requestAnimationFrame(pollShmFft)
+    }
+  }
+
+  requestAnimationFrame(pollShmFft)
+
+  // 2. Poll Metadata and Decoded Packet Ring Buffer every 100ms
+  if (!shmPollTimer) {
+    shmPollTimer = window.setInterval(async () => {
+      try {
+        const st = await invoke<any>('get_shm_status')
+        if (st && st.connected) {
+          isBackendConnected.value = true
+          isPlaying.value = st.running
+          backendStatusText.value = '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)'
+
+          if (Array.isArray(st.packets) && st.packets.length > 0) {
+            for (const pkt of st.packets) {
+              packetHistory.value.unshift(pkt as DecodedPacket)
+              if (packetHistory.value.length > 200) {
+                packetHistory.value.pop()
+              }
+              totalPacketsCount.value++
+              if (pkt.crcValid) {
+                validCrcCount.value++
+              }
+            }
+          }
+        }
+      } catch (e) {}
+    }, 100)
+  }
+
+  return true
+}
+
+/**
  * Connect to C++ Backend Server via WebSocket (ws://127.0.0.1:5259/ws)
  */
 export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
   if (typeof window === 'undefined') return
+
+  if (isTauriEnv) {
+    initShmEngine()
+  }
+
   if (backendWs && (backendWs.readyState === WebSocket.OPEN || backendWs.readyState === WebSocket.CONNECTING)) {
     return
   }
@@ -201,6 +271,11 @@ function scheduleReconnect() {
 }
 
 export function sendBackendCommand(cmd: string, params: Record<string, any> = {}) {
+  if (isTauriEnv) {
+    try {
+      invoke('send_shm_cmd', { cmd, params })
+    } catch (e) {}
+  }
   if (backendWs && backendWs.readyState === WebSocket.OPEN) {
     backendWs.send(JSON.stringify({ cmd, ...params }))
   }

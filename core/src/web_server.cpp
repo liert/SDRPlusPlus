@@ -16,6 +16,7 @@
 #endif
 
 #include "web_server.h"
+#include "shm_manager.h"
 #include <utils/flog.h>
 #include <signal_path/signal_path.h>
 #include <fftw3.h>
@@ -275,6 +276,9 @@ namespace web_server {
     }
 
     void broadcastPacket(const nlohmann::json& packet) {
+        // Also push to Shared Memory Ring Buffer
+        shm_manager::pushPacket(packet);
+
         std::string jsonStr = packet.dump();
         std::vector<std::shared_ptr<WsClient>> clientList;
         {
@@ -320,7 +324,8 @@ namespace web_server {
             fftOutputDb[i] = std::max(-120.0f, std::min(10.0f, dbm));
         }
 
-        // Broadcast binary Float32Array over WebSocket
+        // Broadcast binary Float32Array over WebSocket & Shared Memory
+        shm_manager::updateFft(fftOutputDb, FFT_SIZE);
         broadcastFft(fftOutputDb, FFT_SIZE);
     }
 

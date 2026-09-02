@@ -1,6 +1,7 @@
 #include "server.h"
 #include "core.h"
 #include "web_server.h"
+#include "shm_manager.h"
 #include <utils/flog.h>
 #include <version.h>
 #include <config.h>
@@ -206,8 +207,7 @@ namespace server {
         std::string host = (std::string)core::args["addr"];
         int port = (int)core::args["port"];
 
-        // Start High-Performance WebUI WebSocket & HTTP Server on the listening port
-        web_server::setCommandHandler([](const std::string& cmd, const nlohmann::json& params) -> nlohmann::json {
+        auto handleCmd = [](const std::string& cmd, const nlohmann::json& params) -> nlohmann::json {
             nlohmann::json res;
             if (cmd == "start") {
                 if (sigpath::sourceManager.getSelectedSource().empty()) {
@@ -306,9 +306,17 @@ namespace server {
                 res["devices"] = queryHackRfDevices();
                 res["status"] = "ok";
             }
-            return res;
-        });
 
+            shm_manager::updateState(running, sigpath::sourceManager.getSelectedSource(), centerFreq, sampleRate, lnaGain, vgaGain, ampEnable, biasTEnable, "");
+            return res;
+        };
+
+        // Initialize Native Windows Shared Memory Engine
+        shm_manager::init();
+        shm_manager::setCommandHandler(handleCmd);
+        shm_manager::updateState(running, sigpath::sourceManager.getSelectedSource(), centerFreq, sampleRate, lnaGain, vgaGain, ampEnable, biasTEnable, "");
+
+        web_server::setCommandHandler(handleCmd);
         web_server::start(port, host);
 
         // Start legacy TCP listener
@@ -319,8 +327,11 @@ namespace server {
             }
         } catch (...) {}
 
-        flog::info("🚀 SDR++ C++ Backend Engine is READY on {0}:{1}", host, port);
-        while(1) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
+        flog::info("🚀 SDR++ C++ Backend Engine is READY (SHM + WS {0}:{1})", host, port);
+        while(1) {
+            shm_manager::checkCommands();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
 
         return 0;
     }
