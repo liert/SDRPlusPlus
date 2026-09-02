@@ -22,6 +22,12 @@ struct ShmPacket {
     uint8_t payload[128];
 };
 
+struct ShmDeviceInfo {
+    char serial[64];
+    char name[64];
+    int32_t index;
+};
+
 struct ShmHeader {
     uint32_t magic;          // 0x53445250
     uint32_t version;        // 1
@@ -38,6 +44,10 @@ struct ShmHeader {
     char sourceName[32];
     char deviceSerial[64];
     
+    // Connected Hardware Devices
+    uint32_t deviceCount;
+    ShmDeviceInfo devices[8];
+
     // Decoded FLRC Packet Ring Buffer (last 32 packets)
     uint32_t packetSeq;      // Atomic increment per packet
     uint32_t packetWriteIdx; // 0..31
@@ -66,6 +76,7 @@ namespace shm_manager {
     void processIqSamples(const dsp::complex_t* samples, int count, double sampleRate);
     void updateFft(const float* fftDb, int size);
     void pushPacket(const nlohmann::json& packet);
+    void updateDevices();
     void updateState(bool running, const std::string& sourceName, double centerFreq, double sampleRate, int lna, int vga, bool amp, bool biasT, const std::string& serial);
 
     typedef std::function<nlohmann::json(const std::string& cmd, const nlohmann::json& params)> CommandHandler;

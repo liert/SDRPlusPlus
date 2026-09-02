@@ -18,7 +18,6 @@ extern "system" {
         file_offset_low: u32,
         number_of_bytes_to_map: usize,
     ) -> *mut c_void;
-    fn UnmapViewOfFile(base_address: *const c_void) -> i32;
     fn CloseHandle(handle: isize) -> i32;
 }
 
@@ -34,6 +33,14 @@ pub struct ShmPacket {
     pub freq_offset_khz: f32,
     pub timestamp: [u8; 32],
     pub payload: [u8; 128],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ShmDeviceInfo {
+    pub serial: [u8; 64],
+    pub name: [u8; 64],
+    pub index: i32,
 }
 
 #[repr(C)]
@@ -53,6 +60,10 @@ pub struct ShmHeader {
     pub source_name: [u8; 32],
     pub device_serial: [u8; 64],
     
+    // Connected Hardware Devices
+    pub device_count: u32,
+    pub devices: [ShmDeviceInfo; 8],
+
     // Decoded FLRC Packet Ring Buffer
     pub packet_seq: u32,
     pub packet_write_idx: u32,
@@ -72,6 +83,13 @@ pub struct ShmCmdBuffer {
     pub param_int2: i32,
     pub param_int3: i32,
     pub param_str: [u8; 64],
+}
+
+#[derive(Serialize)]
+pub struct ShmDeviceInfoResult {
+    pub serial: String,
+    pub name: String,
+    pub index: i32,
 }
 
 #[derive(Serialize)]
@@ -115,6 +133,7 @@ pub struct ShmStatusInfo {
     pub source: String,
     #[serde(rename = "deviceSerial")]
     pub device_serial: String,
+    pub devices: Vec<ShmDeviceInfoResult>,
     pub packets: Vec<ShmDecodedPacket>,
 }
 
@@ -206,6 +225,7 @@ impl ShmManager {
                 bias_t: false,
                 source: "HackRF".to_string(),
                 device_serial: "".to_string(),
+                devices: Vec::new(),
                 packets: Vec::new(),
             };
         }
@@ -225,6 +245,7 @@ impl ShmManager {
                     bias_t: false,
                     source: "HackRF".to_string(),
                     device_serial: "".to_string(),
+                    devices: Vec::new(),
                     packets: Vec::new(),
                 };
             }
@@ -235,6 +256,26 @@ impl ShmManager {
             let serial_str = std::ffi::CStr::from_ptr(hdr.device_serial.as_ptr() as *const i8)
                 .to_string_lossy()
                 .into_owned();
+
+            // Extract physical devices list
+            let mut dev_list = Vec::new();
+            let dev_count = (hdr.device_count as usize).min(8);
+            for i in 0..dev_count {
+                let d = &hdr.devices[i];
+                let d_serial = std::ffi::CStr::from_ptr(d.serial.as_ptr() as *const i8)
+                    .to_string_lossy()
+                    .into_owned();
+                let d_name = std::ffi::CStr::from_ptr(d.name.as_ptr() as *const i8)
+                    .to_string_lossy()
+                    .into_owned();
+                if !d_serial.is_empty() {
+                    dev_list.push(ShmDeviceInfoResult {
+                        serial: d_serial,
+                        name: if d_name.is_empty() { "HackRF One".to_string() } else { d_name },
+                        index: d.index,
+                    });
+                }
+            }
 
             let mut new_packets = Vec::new();
             let cur_packet_seq = hdr.packet_seq;
@@ -287,6 +328,7 @@ impl ShmManager {
                 bias_t: hdr.bias_t_enable != 0,
                 source: if source_str.is_empty() { "HackRF".to_string() } else { source_str },
                 device_serial: serial_str,
+                devices: dev_list,
                 packets: new_packets,
             }
         }

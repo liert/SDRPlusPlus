@@ -90,6 +90,7 @@ fn get_shm_status() -> ShmStatusInfo {
             bias_t: false,
             source: "HackRF".to_string(),
             device_serial: "".to_string(),
+            devices: Vec::new(),
             packets: Vec::new(),
         }
     }

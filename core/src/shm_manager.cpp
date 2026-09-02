@@ -9,6 +9,12 @@
 #include <fftw3.h>
 #include <volk/volk.h>
 
+#if __has_include(<libhackrf/hackrf.h>)
+#include <libhackrf/hackrf.h>
+#elif __has_include(<hackrf.h>)
+#include <hackrf.h>
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -58,6 +64,35 @@ namespace shm_manager {
         if (fftPlan) { fftwf_destroy_plan(fftPlan); fftPlan = nullptr; }
         if (fftwIn) { fftwf_free(fftwIn); fftwIn = nullptr; }
         if (fftwOut) { fftwf_free(fftwOut); fftwOut = nullptr; }
+    }
+
+    void updateDevices() {
+#ifdef _WIN32
+        if (!shmHeader) return;
+        std::lock_guard<std::mutex> lock(shmMtx);
+#if defined(LIBHACKRF_HACKRF_H) || defined(__HACKRF_H__) || defined(HACKRF_SUCCESS)
+        try {
+            hackrf_device_list_t* list = hackrf_device_list();
+            if (list) {
+                shmHeader->deviceCount = (uint32_t)std::min<int>(list->devicecount, 8);
+                for (int i = 0; i < (int)shmHeader->deviceCount; i++) {
+                    if (list->serial_numbers[i]) {
+                        std::strncpy(shmHeader->devices[i].serial, list->serial_numbers[i], 63);
+                        std::string s(list->serial_numbers[i]);
+                        std::string shortSerial = (s.length() >= 16) ? s.substr(16) : s;
+                        snprintf(shmHeader->devices[i].name, 63, "HackRF One (%s)", shortSerial.c_str());
+                        shmHeader->devices[i].index = i;
+                    }
+                }
+                hackrf_device_list_free(list);
+            } else {
+                shmHeader->deviceCount = 0;
+            }
+        } catch (...) {
+            shmHeader->deviceCount = 0;
+        }
+#endif
+#endif
     }
 
     bool init() {
@@ -245,7 +280,9 @@ namespace shm_manager {
         shmHeader->ampEnable = amp ? 1 : 0;
         shmHeader->biasTEnable = biasT ? 1 : 0;
         strncpy(shmHeader->sourceName, sourceName.c_str(), sizeof(shmHeader->sourceName) - 1);
-        strncpy(shmHeader->deviceSerial, serial.c_str(), sizeof(shmHeader->deviceSerial) - 1);
+        if (!serial.empty()) {
+            strncpy(shmHeader->deviceSerial, serial.c_str(), sizeof(shmHeader->deviceSerial) - 1);
+        }
 #endif
     }
 
@@ -269,6 +306,8 @@ namespace shm_manager {
                 params["amp"] = (shmCmd->paramInt3 != 0);
             } else if (cmd == "set_source") {
                 params["source"] = std::string(shmCmd->paramStr);
+            } else if (cmd == "get_devices" || cmd == "refresh_devices") {
+                updateDevices();
             }
 
             customCmdHandler(cmd, params);

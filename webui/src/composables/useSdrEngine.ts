@@ -136,7 +136,12 @@ export function initShmEngine() {
           isPlaying.value = st.running
           backendStatusText.value = '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)'
 
-          if (st.deviceSerial && availableDevices.value.length === 0) {
+          if (Array.isArray(st.devices) && st.devices.length > 0) {
+            availableDevices.value = st.devices
+            if (!sourceConfig.deviceSerial) {
+              sourceConfig.deviceSerial = st.devices[0].serial
+            }
+          } else if (st.deviceSerial && availableDevices.value.length === 0) {
             availableDevices.value = [{
               serial: st.deviceSerial,
               name: `HackRF One (${st.deviceSerial.slice(-8)})`,
