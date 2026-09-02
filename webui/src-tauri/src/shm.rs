@@ -3,14 +3,28 @@ use std::sync::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 
-const SDRPP_SHM_NAME: &str = "Local\\SDRPP_SHM_BUFFER\0";
-const SDRPP_SHM_CMD_NAME: &str = "Local\\SDRPP_SHM_CMD\0";
+const SDRPP_SHM_NAME_W: &[u16] = &[
+    b'L' as u16, b'o' as u16, b'c' as u16, b'a' as u16, b'l' as u16, b'\\' as u16,
+    b'S' as u16, b'D' as u16, b'R' as u16, b'P' as u16, b'P' as u16, b'_' as u16,
+    b'S' as u16, b'H' as u16, b'M' as u16, b'_' as u16,
+    b'B' as u16, b'U' as u16, b'F' as u16, b'F' as u16, b'E' as u16, b'R' as u16,
+    0
+];
+
+const SDRPP_SHM_CMD_NAME_W: &[u16] = &[
+    b'L' as u16, b'o' as u16, b'c' as u16, b'a' as u16, b'l' as u16, b'\\' as u16,
+    b'S' as u16, b'D' as u16, b'R' as u16, b'P' as u16, b'P' as u16, b'_' as u16,
+    b'S' as u16, b'H' as u16, b'M' as u16, b'_' as u16,
+    b'C' as u16, b'M' as u16, b'D' as u16,
+    0
+];
+
 const FILE_MAP_ALL_ACCESS: u32 = 0xF001F;
 const FILE_MAP_READ: u32 = 0x0004;
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn OpenFileMappingA(desired_access: u32, inherit_handle: i32, name: *const u8) -> isize;
+    fn OpenFileMappingW(desired_access: u32, inherit_handle: i32, name: *const u16) -> isize;
     fn MapViewOfFile(
         file_mapping_object: isize,
         desired_access: u32,
@@ -167,9 +181,9 @@ impl ShmManager {
         }
 
         unsafe {
-            let h = OpenFileMappingA(FILE_MAP_READ, 0, SDRPP_SHM_NAME.as_ptr());
+            let h = OpenFileMappingW(FILE_MAP_READ, 0, SDRPP_SHM_NAME_W.as_ptr());
             if h != 0 {
-                let p = MapViewOfFile(h, FILE_MAP_READ, 0, 0, std::mem::size_of::<ShmHeader>());
+                let p = MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0);
                 if !p.is_null() {
                     self.h_shm = h;
                     self.header_ptr = p as *const ShmHeader;
@@ -178,9 +192,9 @@ impl ShmManager {
                 }
             }
 
-            let h_cmd = OpenFileMappingA(FILE_MAP_ALL_ACCESS, 0, SDRPP_SHM_CMD_NAME.as_ptr());
+            let h_cmd = OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, SDRPP_SHM_CMD_NAME_W.as_ptr());
             if h_cmd != 0 {
-                let p_cmd = MapViewOfFile(h_cmd, FILE_MAP_ALL_ACCESS, 0, 0, std::mem::size_of::<ShmCmdBuffer>());
+                let p_cmd = MapViewOfFile(h_cmd, FILE_MAP_ALL_ACCESS, 0, 0, 0);
                 if !p_cmd.is_null() {
                     self.h_cmd_shm = h_cmd;
                     self.cmd_ptr = p_cmd as *mut ShmCmdBuffer;
@@ -206,24 +220,6 @@ impl ShmManager {
             let slice = std::slice::from_raw_parts(
                 hdr.fft_data.as_ptr(),
                 1024,
-            );
-            Some(slice.to_vec())
-        }
-    }
-
-    pub fn read_fft_raw(&mut self) -> Option<Vec<u8>> {
-        if !self.try_connect() || self.header_ptr.is_null() {
-            return None;
-        }
-
-        unsafe {
-            let hdr = &*self.header_ptr;
-            if hdr.magic != 0x53445250 {
-                return None;
-            }
-            let slice = std::slice::from_raw_parts(
-                hdr.fft_data.as_ptr() as *const u8,
-                1024 * std::mem::size_of::<f32>(),
             );
             Some(slice.to_vec())
         }
