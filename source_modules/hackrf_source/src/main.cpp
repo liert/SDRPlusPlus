@@ -1,5 +1,7 @@
 #include <utils/flog.h>
 #include <module.h>
+#include <mutex>
+#include <atomic>
 #include <gui/gui.h>
 #include <signal_path/signal_path.h>
 #include <core.h>
@@ -469,10 +471,17 @@ public:
     }
 
 private:
+    static inline std::atomic<uint64_t> transferCount{0};
     static int callback(hackrf_transfer* transfer) {
         HackRFSourceModule* _this = (HackRFSourceModule*)transfer->rx_ctx;
         if (!_this || !_this->running) return -1;
         volk_8i_s32f_convert_32f((float*)_this->stream.writeBuf, (int8_t*)transfer->buffer, 128.0f, transfer->valid_length);
+        
+        uint64_t cnt = ++transferCount;
+        if (cnt % 120 == 0) {
+            flog::info("⚡ [HackRF Stream] USB Bulk Transfer Active: {0} blocks received ({1} MB transferred)", cnt, (cnt * 262144) / (1024 * 1024));
+        }
+
         if (!_this->stream.swap(transfer->valid_length / 2)) {
             if (!_this->running) return -1;
             return 0;

@@ -14,6 +14,8 @@ export { hasLiveHackRfData }
 
 export const isPlaying = ref(false)
 export const fps = ref(60)
+export const dspIpcFps = ref(0)
+export const dspSeq = ref(0)
 export const totalPacketsCount = ref(0)
 export const validCrcCount = ref(0)
 export const currentLang = ref<'zh' | 'en'>('zh')
@@ -98,6 +100,8 @@ export const crcSuccessRate = computed(() => {
  */
 export function initShmEngine() {
   let isPolling = false
+  let frameCounter = 0
+  let lastFpsCalc = performance.now()
 
   // 1. High-speed zero-latency Shared Memory FFT polling loop (60 FPS)
   const pollShmFft = async () => {
@@ -115,12 +119,21 @@ export function initShmEngine() {
           isBackendConnected.value = true
           backendStatusText.value = '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)'
         }
+        frameCounter++
       }
     } catch (e) {
       // Backend mapping not yet ready
     } finally {
       isPolling = false
     }
+
+    const now = performance.now()
+    if (now - lastFpsCalc >= 1000) {
+      dspIpcFps.value = Math.round((frameCounter * 1000) / (now - lastFpsCalc))
+      frameCounter = 0
+      lastFpsCalc = now
+    }
+
     requestAnimationFrame(pollShmFft)
   }
 
@@ -134,6 +147,7 @@ export function initShmEngine() {
         if (st && st.connected) {
           isBackendConnected.value = true
           isPlaying.value = st.running
+          dspSeq.value = st.seq
           backendStatusText.value = '⚡ Windows 原生共享内存直通 (IPC Zero-Copy)'
 
           if (Array.isArray(st.devices) && st.devices.length > 0) {

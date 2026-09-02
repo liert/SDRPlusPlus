@@ -213,6 +213,17 @@ namespace shm_manager {
 
         // Direct Ultra-Fast write into Windows Shared Memory (< 0.001 ms)
         updateFft(fftOutputDb, FFT_SIZE);
+
+        static uint64_t fftLogCounter = 0;
+        if (++fftLogCounter % 120 == 0) {
+            float minP = 100.0f, maxP = -150.0f;
+            for (int i = 0; i < FFT_SIZE; i++) {
+                if (fftOutputDb[i] < minP) minP = fftOutputDb[i];
+                if (fftOutputDb[i] > maxP) maxP = fftOutputDb[i];
+            }
+            flog::info("📊 [DSP FFT Pipeline] Active: {0} frames computed (seq={1}), Range: {2} dBm ~ {3} dBm",
+                       fftLogCounter, (uint32_t)shmHeader->seq, (int)minP, (int)maxP);
+        }
     }
 
     void updateFft(const float* fftDb, int size) {

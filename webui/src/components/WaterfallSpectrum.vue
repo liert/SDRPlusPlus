@@ -7,7 +7,9 @@ import {
   spectrumSettings,
   currentLang,
   isBackendConnected,
-  hasLiveHackRfData
+  hasLiveHackRfData,
+  dspIpcFps,
+  dspSeq
 } from '@/composables/useSdrEngine'
 import { liveHackRfFft } from '@/composables/useHackRf'
 import { generateColormapLut } from '@/composables/useColormaps'
@@ -263,6 +265,22 @@ function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: nu
     else ctx.lineTo(x, y)
   }
   ctx.stroke()
+
+  // 6. Draw Telemetry HUD
+  if (width > 300) {
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)'
+    ctx.fillRect(width - 245, 6, 238, 22)
+    ctx.strokeStyle = '#334155'
+    ctx.lineWidth = 1
+    ctx.strokeRect(width - 245, 6, 238, 22)
+
+    ctx.fillStyle = isPlaying.value ? '#34d399' : '#94a3b8'
+    ctx.font = '10px "Cascadia Code", monospace'
+    const hudText = isPlaying.value
+      ? `⚡ SHM: ${dspIpcFps.value || 60} FPS | Seq: ${dspSeq.value}`
+      : `⏸️ 待机中 (点击启动采集)`
+    ctx.fillText(hudText, width - 238, 21)
+  }
 }
 
 function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: number) {
