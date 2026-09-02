@@ -250,16 +250,27 @@ private:
     static void start(void* ctx) {
         HackRFSourceModule* _this = (HackRFSourceModule*)ctx;
         if (_this->running) { return; }
-        if (_this->selectedSerial == "") {
-            flog::error("Tried to start HackRF source with empty serial");
+
+        std::lock_guard<std::mutex> lock(_this->devMtx);
+
+        _this->refresh();
+        if (_this->devList.empty()) {
+            flog::error("Tried to start HackRF but no HackRF devices found on USB!");
             return;
         }
 
-#ifndef __ANDROID__
-        hackrf_error err = (hackrf_error)hackrf_open_by_serial(_this->selectedSerial.c_str(), &_this->openDev);
-#else
-        hackrf_error err = (hackrf_error)hackrf_open_by_fd(_this->devFd, &_this->openDev);
-#endif
+        hackrf_error err = HACKRF_ERROR_NOT_FOUND;
+        if (!_this->selectedSerial.empty()) {
+            err = (hackrf_error)hackrf_open_by_serial(_this->selectedSerial.c_str(), &_this->openDev);
+        }
+        if (err != HACKRF_SUCCESS) {
+            // Fallback: open any available HackRF
+            err = (hackrf_error)hackrf_open(&_this->openDev);
+            if (err == HACKRF_SUCCESS && !_this->devList.empty()) {
+                _this->selectedSerial = _this->devList[0];
+            }
+        }
+
         if (err != HACKRF_SUCCESS) {
             flog::error("Could not open HackRF {0}: {1}", _this->selectedSerial, hackrf_error_name(err));
             return;
@@ -269,29 +280,40 @@ private:
         hackrf_set_baseband_filter_bandwidth(_this->openDev, _this->bandwidthIdToBw(_this->bwId));
         hackrf_set_freq(_this->openDev, _this->freq);
 
-        hackrf_set_antenna_enable(_this->openDev, _this->biasT);
-        hackrf_set_amp_enable(_this->openDev, _this->amp);
-        hackrf_set_lna_gain(_this->openDev, _this->lna);
-        hackrf_set_vga_gain(_this->openDev, _this->vga);
+        hackrf_set_antenna_enable(_this->openDev, _this->biasT ? 1 : 0);
+        hackrf_set_amp_enable(_this->openDev, _this->amp ? 1 : 0);
+        hackrf_set_lna_gain(_this->openDev, (uint32_t)_this->lna);
+        hackrf_set_vga_gain(_this->openDev, (uint32_t)_this->vga);
 
-        hackrf_start_rx(_this->openDev, callback, _this);
+        err = (hackrf_error)hackrf_start_rx(_this->openDev, callback, _this);
+        if (err != HACKRF_SUCCESS) {
+            flog::error("Could not start HackRF RX stream: {0}", hackrf_error_name(err));
+            hackrf_close(_this->openDev);
+            _this->openDev = nullptr;
+            return;
+        }
 
         _this->running = true;
-        flog::info("HackRFSourceModule '{0}': Start!", _this->name);
+        flog::info("HackRFSourceModule '{0}': Start RX streaming successfully!", _this->name);
     }
 
     static void stop(void* ctx) {
         HackRFSourceModule* _this = (HackRFSourceModule*)ctx;
-        if (!_this->running) { return; }
+        std::lock_guard<std::mutex> lock(_this->devMtx);
+        if (!_this->running && !_this->openDev) { return; }
         _this->running = false;
         _this->stream.stopWriter();
-        // TODO: Stream stop
-        hackrf_error err = (hackrf_error)hackrf_close(_this->openDev);
-        if (err != HACKRF_SUCCESS) {
-            flog::error("Could not close HackRF {0}: {1}", _this->selectedSerial, hackrf_error_name(err));
+
+        if (_this->openDev) {
+            hackrf_stop_rx(_this->openDev);
+            hackrf_error err = (hackrf_error)hackrf_close(_this->openDev);
+            if (err != HACKRF_SUCCESS) {
+                flog::error("Could not close HackRF {0}: {1}", _this->selectedSerial, hackrf_error_name(err));
+            }
+            _this->openDev = nullptr;
         }
         _this->stream.clearWriteStop();
-        flog::info("HackRFSourceModule '{0}': Stop!", _this->name);
+        flog::info("HackRFSourceModule '{0}': Stop and released USB device!", _this->name);
     }
 
     static void tune(double freq, void* ctx) {
