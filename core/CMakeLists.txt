@@ -123,31 +123,31 @@ else()
 
     pkg_check_modules(FFTW3 REQUIRED fftw3f)
     pkg_check_modules(VOLK REQUIRED volk)
-    pkg_check_modules(GLFW3 REQUIRED glfw3)
     pkg_check_modules(LIBZSTD REQUIRED libzstd)
+    pkg_check_modules(LIBHACKRF libhackrf)
 
     target_include_directories(sdrpp_core PUBLIC
         ${OPENGL_INCLUDE_DIRS}
         ${FFTW3_INCLUDE_DIRS}
-        ${GLFW3_INCLUDE_DIRS}
         ${VOLK_INCLUDE_DIRS}
         ${LIBZSTD_INCLUDE_DIRS}
+        ${LIBHACKRF_INCLUDE_DIRS}
     )
     
     target_link_directories(sdrpp_core PUBLIC
         ${OPENGL_LIBRARY_DIRS}
         ${FFTW3_LIBRARY_DIRS}
-        ${GLFW3_LIBRARY_DIRS}
         ${VOLK_LIBRARY_DIRS}
         ${LIBZSTD_LIBRARY_DIRS}
+        ${LIBHACKRF_LIBRARY_DIRS}
     )
 
     target_link_libraries(sdrpp_core PUBLIC
         ${OPENGL_LIBRARIES}
         ${FFTW3_LIBRARIES}
-        ${GLFW3_LIBRARIES}
         ${VOLK_LIBRARIES}
         ${LIBZSTD_LIBRARIES}
+        ${LIBHACKRF_LIBRARIES}
     )
 
     if (NOT USE_INTERNAL_LIBCORRECT)

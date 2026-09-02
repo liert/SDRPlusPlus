@@ -9,7 +9,7 @@ import {
   isBackendConnected,
   hasLiveHackRfData
 } from '@/composables/useSdrEngine'
-import { hackrfInfo, liveHackRfFft } from '@/composables/useHackRf'
+import { liveHackRfFft } from '@/composables/useHackRf'
 import { generateColormapLut } from '@/composables/useColormaps'
 
 const spectrumCanvas = ref<HTMLCanvasElement | null>(null)
@@ -72,8 +72,8 @@ function updateSimulatedFft(time: number) {
   const minDb = spectrumSettings.minDb
   const maxDb = spectrumSettings.maxDb
 
-  // Case 1: Live Streaming from C++ Backend WebSocket or WebUSB
-  if (hasLiveHackRfData.value || (sourceConfig.type === 'hackrf' && (hackrfInfo.isStreaming || isBackendConnected.value))) {
+  // Case 1: Live Streaming from C++ Backend WebSocket
+  if (hasLiveHackRfData.value || isBackendConnected.value) {
     for (let i = 0; i < fftSize; i++) {
       const liveVal = liveHackRfFft[i]
       const alpha = 1.0 - spectrumSettings.smoothing

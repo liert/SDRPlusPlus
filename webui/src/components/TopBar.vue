@@ -10,7 +10,6 @@ import {
   fps,
   isBackendConnected
 } from '@/composables/useSdrEngine'
-import { hackrfInfo } from '@/composables/useHackRf'
 import {
   Play,
   Square,
@@ -20,7 +19,6 @@ import {
   Cpu,
   Layers,
   Maximize2,
-  Usb,
   Zap
 } from 'lucide-vue-next'
 
@@ -59,23 +57,21 @@ function formatFreq(freqHz: number): string {
 
       <!-- Source & C++ Backend Status Badge -->
       <div class="hidden sm:flex items-center gap-2 bg-sdr-dark/80 border border-sdr-border px-2.5 py-1 rounded text-xs font-mono">
-        <component :is="sourceConfig.type === 'hackrf' ? Usb : Radio" class="w-3.5 h-3.5 text-cyan-400" />
+        <Radio class="w-3.5 h-3.5 text-cyan-400" />
         <span class="text-slate-400 font-sans">源:</span>
         <b class="text-slate-200 uppercase">{{ sourceConfig.type }}</b>
         <span class="text-slate-500">|</span>
         <span class="text-emerald-400">{{ (sourceConfig.sampleRateHz / 1e6).toFixed(3) }} MSPS</span>
 
-        <!-- Backend or WebUSB Pill -->
+        <!-- Backend Status Pill -->
         <span class="text-slate-500">|</span>
         <span v-if="isBackendConnected" class="text-amber-400 font-bold flex items-center gap-1">
           <Zap class="w-3 h-3 text-amber-400 animate-pulse" />
-          <span>C++ 后端推流中</span>
+          <span>{{ isPlaying ? 'C++ 后端采集中' : 'C++ 后端已连接' }}</span>
         </span>
-        <span v-else-if="sourceConfig.type === 'hackrf'" :class="hackrfInfo.isConnected ? 'text-cyan-400 font-bold' : 'text-slate-500'">
-          {{ hackrfInfo.isConnected ? (hackrfInfo.isStreaming ? '● WebUSB 采集中' : '● WebUSB 已连接') : '○ WebUSB 未连接' }}
-        </span>
-        <span v-else class="text-blue-400">
-          ● 本地文件
+        <span v-else class="text-slate-500 flex items-center gap-1">
+          <span class="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+          <span>C++ 后端离线</span>
         </span>
       </div>
     </div>

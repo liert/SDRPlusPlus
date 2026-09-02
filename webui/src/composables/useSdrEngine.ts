@@ -4,23 +4,12 @@ import type {
   DemodConfig,
   VfoState,
   DecodedPacket,
-  SpectrumSettings
+  SpectrumSettings,
+  BackendDeviceInfo
 } from '@/types/sdr'
-import {
-  hackrfInfo,
-  startHackRfRx,
-  stopHackRfRx,
-  updateHackRfFrequency,
-  updateHackRfSampleRate,
-  updateHackRfLnaGain,
-  updateHackRfVgaGain,
-  updateHackRfAmp,
-  updateHackRfBiasT,
-  liveHackRfFft,
-  hasLiveHackRfData
-} from './useHackRf'
+import { liveHackRfFft, hasLiveHackRfData } from './useHackRf'
 
-export { hasLiveHackRfData } from './useHackRf'
+export { hasLiveHackRfData }
 
 export const isPlaying = ref(false)
 export const fps = ref(60)
@@ -28,9 +17,12 @@ export const totalPacketsCount = ref(0)
 export const validCrcCount = ref(0)
 export const currentLang = ref<'zh' | 'en'>('zh')
 
-// C++ Backend WebSocket Connection State
+// C++ Backend Connection State & Device Management
 export const isBackendConnected = ref(false)
-export const backendStatusText = ref('未连接 C++ 后端 (使用 WebUSB / 前端模式)')
+export const backendStatusText = ref('未连接 C++ 后端 (启动: ./sdrpp.exe -s -p 5259)')
+export const availableSources = ref<string[]>(['HackRF', 'File Source', 'RTL-SDR', 'Simulator'])
+export const availableDevices = ref<BackendDeviceInfo[]>([])
+export const isScanningDevices = ref(false)
 
 let backendWs: WebSocket | null = null
 let reconnectTimer: number | null = null
@@ -44,7 +36,8 @@ export const sourceConfig = reactive<SourceConfig>({
   vgaGain: 20,
   ampEnable: false,
   biasT: false,
-  filePath: 'hackrf/fresh_pairing_2400_8.iq',
+  deviceSerial: '',
+  filePath: 'fresh_pairing_2400_8.iq',
   fileFormat: 'raw_int8',
   loop: true
 })
@@ -113,13 +106,22 @@ export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
 
     backendWs.onopen = () => {
       isBackendConnected.value = true
-      backendStatusText.value = '⚡ C++ 后端已连接 (高性能 DSP 流)'
+      backendStatusText.value = '⚡ C++ 后端已连接 (高性能 DSP 引擎)'
       console.log('Connected to SDR++ C++ Backend Engine over WebSocket')
+      
+      // Initialize parameter sync on connect
       const sname = sourceConfig.type === 'hackrf' ? 'HackRF' : (sourceConfig.type === 'file' ? 'File Source' : 'RTL-SDR')
       sendBackendCommand('set_source', { source: sname })
       sendBackendCommand('set_freq', { freq: sourceConfig.centerFreqHz })
       sendBackendCommand('set_samplerate', { sampleRate: sourceConfig.sampleRateHz })
-      sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: sourceConfig.vgaGain, amp: sourceConfig.ampEnable, biasT: sourceConfig.biasT })
+      sendBackendCommand('set_gain', {
+        lna: sourceConfig.lnaGain,
+        vga: sourceConfig.vgaGain,
+        amp: sourceConfig.ampEnable,
+        biasT: sourceConfig.biasT
+      })
+      sendBackendCommand('get_devices')
+      sendBackendCommand('get_sources')
       sendBackendCommand('get_status')
     }
 
@@ -144,9 +146,25 @@ export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
             if (msg.crcValid) {
               validCrcCount.value++
             }
+          } else if (msg.type === 'devices' || msg.devices) {
+            // Update device list from backend
+            if (Array.isArray(msg.devices)) {
+              availableDevices.value = msg.devices
+              if (availableDevices.value.length > 0 && !sourceConfig.deviceSerial) {
+                sourceConfig.deviceSerial = availableDevices.value[0].serial
+              }
+            }
+            isScanningDevices.value = false
+          } else if (msg.sources) {
+            if (Array.isArray(msg.sources)) {
+              availableSources.value = msg.sources
+            }
           } else if (msg.type === 'status' || msg.status === 'ok') {
             if (msg.running !== undefined) {
               isPlaying.value = msg.running
+            }
+            if (msg.devices && Array.isArray(msg.devices)) {
+              availableDevices.value = msg.devices
             }
           }
         } catch (e) {
@@ -157,7 +175,7 @@ export function connectBackendWs(url = 'ws://127.0.0.1:5259/ws') {
 
     backendWs.onclose = () => {
       isBackendConnected.value = false
-      backendStatusText.value = '未连接 C++ 后端 (使用 WebUSB / 前端模式)'
+      backendStatusText.value = '未连接 C++ 后端 (启动: ./sdrpp.exe -s -p 5259)'
       backendWs = null
       scheduleReconnect()
     }
@@ -184,6 +202,12 @@ export function sendBackendCommand(cmd: string, params: Record<string, any> = {}
   }
 }
 
+export function refreshBackendDevices() {
+  isScanningDevices.value = true
+  sendBackendCommand('get_devices')
+  setTimeout(() => { isScanningDevices.value = false }, 1500)
+}
+
 // Auto-connect on startup
 if (typeof window !== 'undefined') {
   connectBackendWs()
@@ -194,48 +218,48 @@ watch(() => sourceConfig.centerFreqHz, (hz) => {
   if (isBackendConnected.value) {
     sendBackendCommand('set_freq', { freq: hz })
   }
-  if (hackrfInfo.isConnected) updateHackRfFrequency(hz)
 })
 
 watch(() => sourceConfig.sampleRateHz, (hz) => {
   if (isBackendConnected.value) {
     sendBackendCommand('set_samplerate', { sampleRate: hz })
   }
-  if (hackrfInfo.isConnected) updateHackRfSampleRate(hz)
 })
 
 watch(() => sourceConfig.lnaGain, (gain) => {
   if (isBackendConnected.value) {
     sendBackendCommand('set_gain', { lna: gain, vga: sourceConfig.vgaGain, amp: sourceConfig.ampEnable, biasT: sourceConfig.biasT })
   }
-  if (hackrfInfo.isConnected) updateHackRfLnaGain(gain)
 })
 
 watch(() => sourceConfig.vgaGain, (gain) => {
   if (isBackendConnected.value) {
     sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: gain, amp: sourceConfig.ampEnable, biasT: sourceConfig.biasT })
   }
-  if (hackrfInfo.isConnected) updateHackRfVgaGain(gain)
 })
 
 watch(() => sourceConfig.ampEnable, (amp) => {
   if (isBackendConnected.value) {
     sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: sourceConfig.vgaGain, amp, biasT: sourceConfig.biasT })
   }
-  if (hackrfInfo.isConnected) updateHackRfAmp(amp)
 })
 
 watch(() => sourceConfig.biasT, (bias) => {
   if (isBackendConnected.value) {
     sendBackendCommand('set_gain', { lna: sourceConfig.lnaGain, vga: sourceConfig.vgaGain, amp: sourceConfig.ampEnable, biasT: bias })
   }
-  if (hackrfInfo.isConnected) updateHackRfBiasT(bias)
+})
+
+watch(() => sourceConfig.deviceSerial, (serial) => {
+  if (isBackendConnected.value && serial) {
+    sendBackendCommand('set_device', { serial })
+  }
 })
 
 // Switch source type handler
 watch(() => sourceConfig.type, (newType) => {
   if (isBackendConnected.value) {
-    const sname = newType === 'hackrf' ? 'HackRF Source' : (newType === 'file' ? 'File Source' : 'RTL-SDR Source')
+    const sname = newType === 'hackrf' ? 'HackRF' : (newType === 'file' ? 'File Source' : 'RTL-SDR')
     sendBackendCommand('set_source', { source: sname })
   }
   if (isPlaying.value) {
@@ -251,7 +275,7 @@ export function checkVfoSignalLock() {
   const vfoMin = vfo.offsetHz - vfo.bandwidthHz / 2
   const vfoMax = vfo.offsetHz + vfo.bandwidthHz / 2
 
-  if (isBackendConnected.value || (sourceConfig.type === 'hackrf' && (hasLiveHackRfData.value || hackrfInfo.isStreaming))) {
+  if (isBackendConnected.value || (sourceConfig.type === 'hackrf' && hasLiveHackRfData.value)) {
     // Analyze live FFT power in the VFO frequency passband
     const fftLen = liveHackRfFft.length
     const binStart = Math.max(0, Math.min(fftLen - 1, Math.floor((0.5 + vfoMin / sourceConfig.sampleRateHz) * fftLen)))
@@ -367,15 +391,10 @@ function startEngine() {
   playDurationSec = 0
 
   if (isBackendConnected.value) {
-    // When C++ Backend is connected, it handles DSP and frame decoding on the C++ side!
     return
   }
 
-  if (sourceConfig.type === 'hackrf') {
-    if (hackrfInfo.isConnected) {
-      startHackRfRx()
-    }
-  } else if (sourceConfig.type === 'file') {
+  if (sourceConfig.type === 'file') {
     playbackProgressTimer = window.setInterval(() => {
       if (!isPlaying.value) return
       playDurationSec += 0.5
@@ -438,8 +457,4 @@ function stopEngine() {
   if (simTimer) { clearInterval(simTimer); simTimer = null }
   if (packetGenTimer) { clearInterval(packetGenTimer); packetGenTimer = null }
   if (playbackProgressTimer) { clearInterval(playbackProgressTimer); playbackProgressTimer = null }
-
-  if (sourceConfig.type === 'hackrf' && hackrfInfo.isStreaming) {
-    stopHackRfRx()
-  }
 }

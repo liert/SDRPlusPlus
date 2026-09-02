@@ -13,6 +13,12 @@
 #include "dsp/sink/handler_sink.h"
 #include <zstd.h>
 
+#if __has_include(<libhackrf/hackrf.h>)
+#include <libhackrf/hackrf.h>
+#elif __has_include(<hackrf.h>)
+#include <hackrf.h>
+#endif
+
 namespace server {
     dsp::stream<dsp::complex_t> dummyInput;
     dsp::compression::SampleStreamCompressor comp;
@@ -48,9 +54,36 @@ namespace server {
     bool running = false;
     bool compression = false;
     double sampleRate = 8000000.0;
+    double centerFreq = 2400000000.0;
+    int lnaGain = 32;
+    int vgaGain = 20;
+    bool ampEnable = false;
+    bool biasTEnable = false;
 
     static void _fftSampleHandler(dsp::complex_t* data, int count, void* ctx) {
         web_server::processIqSamples(data, count, sampleRate);
+    }
+
+    static nlohmann::json queryHackRfDevices() {
+        nlohmann::json devs = nlohmann::json::array();
+#if defined(LIBHACKRF_HACKRF_H) || defined(__HACKRF_H__) || defined(HACKRF_SUCCESS)
+        try {
+            hackrf_device_list_t* list = hackrf_device_list();
+            if (list) {
+                for (int i = 0; i < list->devicecount; i++) {
+                    if (list->serial_numbers[i]) {
+                        nlohmann::json d;
+                        d["serial"] = list->serial_numbers[i];
+                        d["name"] = std::string("HackRF One (") + (list->serial_numbers[i] + 16) + ")";
+                        d["index"] = i;
+                        devs.push_back(d);
+                    }
+                }
+                hackrf_device_list_free(list);
+            }
+        } catch (...) {}
+#endif
+        return devs;
     }
 
     int main() {
@@ -174,6 +207,7 @@ namespace server {
                 res["running"] = false;
             } else if (cmd == "set_freq" && params.contains("freq")) {
                 double freq = params["freq"];
+                centerFreq = freq;
                 sigpath::sourceManager.tune(freq);
                 res["status"] = "ok";
                 res["freq"] = freq;
@@ -184,7 +218,15 @@ namespace server {
                 res["status"] = "ok";
                 res["sampleRate"] = sr;
             } else if (cmd == "set_gain") {
+                if (params.contains("lna")) lnaGain = params["lna"];
+                if (params.contains("vga")) vgaGain = params["vga"];
+                if (params.contains("amp")) ampEnable = params["amp"];
+                if (params.contains("biasT")) biasTEnable = params["biasT"];
                 res["status"] = "ok";
+                res["lna"] = lnaGain;
+                res["vga"] = vgaGain;
+                res["amp"] = ampEnable;
+                res["biasT"] = biasTEnable;
             } else if (cmd == "set_source" && params.contains("source")) {
                 std::string sname = params["source"];
                 if (sourceList.keyExists(sname)) {
@@ -202,6 +244,24 @@ namespace server {
                     slist.push_back(name);
                 }
                 res["sources"] = slist;
+                res["status"] = "ok";
+            } else if (cmd == "get_devices" || cmd == "get_hackrf_devices") {
+                res["type"] = "devices";
+                res["devices"] = queryHackRfDevices();
+                res["status"] = "ok";
+            } else if (cmd == "get_status") {
+                res["type"] = "status";
+                res["backend"] = "SDRPlusPlus C++ Core Engine";
+                res["version"] = "1.3.0";
+                res["running"] = running;
+                res["source"] = sigpath::sourceManager.getSelectedSource();
+                res["sampleRate"] = sampleRate;
+                res["centerFreq"] = centerFreq;
+                res["lna"] = lnaGain;
+                res["vga"] = vgaGain;
+                res["amp"] = ampEnable;
+                res["biasT"] = biasTEnable;
+                res["devices"] = queryHackRfDevices();
                 res["status"] = "ok";
             }
             return res;

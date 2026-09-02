@@ -338,7 +338,30 @@ namespace web_server {
                          << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
                          << "Access-Control-Allow-Headers: Content-Type\r\n\r\n";
             } else if (req.find("GET /api/status") != std::string::npos) {
-                std::string body = getStatusJson().dump();
+                nlohmann::json st;
+                if (customCmdHandler) st = customCmdHandler("get_status", nlohmann::json::object());
+                else st = getStatusJson();
+                std::string body = st.dump();
+                httpResp << "HTTP/1.1 200 OK\r\n"
+                         << "Content-Type: application/json\r\n"
+                         << "Access-Control-Allow-Origin: *\r\n"
+                         << "Content-Length: " << body.size() << "\r\n\r\n"
+                         << body;
+            } else if (req.find("GET /api/devices") != std::string::npos || req.find("GET /api/hackrf/devices") != std::string::npos) {
+                nlohmann::json devs;
+                if (customCmdHandler) devs = customCmdHandler("get_devices", nlohmann::json::object());
+                else devs = nlohmann::json::object();
+                std::string body = devs.dump();
+                httpResp << "HTTP/1.1 200 OK\r\n"
+                         << "Content-Type: application/json\r\n"
+                         << "Access-Control-Allow-Origin: *\r\n"
+                         << "Content-Length: " << body.size() << "\r\n\r\n"
+                         << body;
+            } else if (req.find("GET /api/sources") != std::string::npos) {
+                nlohmann::json s;
+                if (customCmdHandler) s = customCmdHandler("get_sources", nlohmann::json::object());
+                else s = nlohmann::json::object();
+                std::string body = s.dump();
                 httpResp << "HTTP/1.1 200 OK\r\n"
                          << "Content-Type: application/json\r\n"
                          << "Access-Control-Allow-Origin: *\r\n"
