@@ -206,7 +206,13 @@ namespace web_server {
         }
 
         frame.insert(frame.end(), payload, payload + len);
-        send(sock, (const char*)frame.data(), (int)frame.size(), 0);
+        int total = (int)frame.size();
+        int sent = 0;
+        while (sent < total) {
+            int r = send(sock, (const char*)frame.data() + sent, total - sent, 0);
+            if (r <= 0) break;
+            sent += r;
+        }
     }
 
     void broadcastFft(const float* fftDb, int size) {

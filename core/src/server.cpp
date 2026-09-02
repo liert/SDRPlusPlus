@@ -9,7 +9,6 @@
 #include <signal_path/signal_path.h>
 #include <gui/smgui.h>
 #include <utils/optionlist.h>
-#include "dsp/compression/sample_stream_compressor.h"
 #include "dsp/sink/handler_sink.h"
 #include <zstd.h>
 
@@ -21,9 +20,7 @@
 
 namespace server {
     dsp::stream<dsp::complex_t> dummyInput;
-    dsp::compression::SampleStreamCompressor comp;
-    dsp::sink::Handler<uint8_t> hnd;
-    dsp::sink::Handler<dsp::complex_t> iqFftHandler;
+    dsp::sink::Handler<dsp::complex_t> sampleHandler;
 
     net::Conn client;
     uint8_t* rbuf = NULL;
@@ -60,8 +57,26 @@ namespace server {
     bool ampEnable = false;
     bool biasTEnable = false;
 
-    static void _fftSampleHandler(dsp::complex_t* data, int count, void* ctx) {
+    // Single-reader DSP sample handler: Zero-Deadlock, Full-Throughput Stream Pipeline
+    static void _mainSampleHandler(dsp::complex_t* data, int count, void* ctx) {
+        if (!data || count <= 0) return;
+
+        // 1. Process and broadcast real-time FFT spectrum to WebUI WebSocket clients
         web_server::processIqSamples(data, count, sampleRate);
+
+        // 2. Stream to legacy TCP client if connected
+        if (client && client->isOpen()) {
+            if (compression) {
+                bb_pkt_hdr->type = PACKET_TYPE_BASEBAND_COMPRESSED;
+                bb_pkt_hdr->size = sizeof(PacketHeader) + (uint32_t)ZSTD_compressCCtx(cctx, &bbuf[sizeof(PacketHeader)], SERVER_MAX_PACKET_SIZE-sizeof(PacketHeader), data, count * sizeof(dsp::complex_t), 1);
+            }
+            else {
+                bb_pkt_hdr->type = PACKET_TYPE_BASEBAND;
+                bb_pkt_hdr->size = sizeof(PacketHeader) + count * sizeof(dsp::complex_t);
+                memcpy(&bbuf[sizeof(PacketHeader)], data, count * sizeof(dsp::complex_t));
+            }
+            client->write(bb_pkt_hdr->size, bbuf);
+        }
     }
 
     static nlohmann::json queryHackRfDevices() {
@@ -89,18 +104,13 @@ namespace server {
     int main() {
         flog::info("=====| SDR++ C++ HEADLESS SERVER ENGINE |=====");
 
-        // Init DSP & Compression
-        comp.init(&dummyInput, dsp::compression::PCM_TYPE_I8);
-        hnd.init(&comp.out, _testServerHandler, NULL);
-        iqFftHandler.init(&dummyInput, _fftSampleHandler, NULL);
+        // Init DSP Pipeline with Single Reader (zero deadlock)
+        sampleHandler.init(&dummyInput, _mainSampleHandler, NULL);
+        sampleHandler.start();
 
         rbuf = new uint8_t[SERVER_MAX_PACKET_SIZE];
         sbuf = new uint8_t[SERVER_MAX_PACKET_SIZE];
         bbuf = new uint8_t[SERVER_MAX_PACKET_SIZE];
-
-        comp.start();
-        hnd.start();
-        iqFftHandler.start();
 
         // Initialize headers
         r_pkt_hdr = (PacketHeader*)rbuf;
@@ -116,7 +126,6 @@ namespace server {
         bb_pkt_hdr = (PacketHeader*)bbuf;
         bb_pkt_data = &bbuf[sizeof(PacketHeader)];
 
-        // Initialize compressor
         cctx = ZSTD_createCCtx();
 
         // Load config
@@ -145,9 +154,6 @@ namespace server {
                 core::moduleManager.loadModule(path);
             }
         }
-        else {
-            flog::warn("Module directory {0} does not exist", modulesDir);
-        }
 
         for (auto const& apath : modules) {
             std::filesystem::path file = std::filesystem::u8path(apath);
@@ -173,7 +179,6 @@ namespace server {
             if (!enabled) { core::moduleManager.disableInstance(name); }
         }
 
-        // Do post-init
         core::moduleManager.doPostInitAll();
 
         // Generate source list
@@ -269,7 +274,7 @@ namespace server {
 
         web_server::start(port, host);
 
-        // Also start legacy TCP client listener for backward compatibility
+        // Start legacy TCP listener
         try {
             listener = net::listen(host, port + 1);
             if (listener) {
@@ -294,7 +299,6 @@ namespace server {
         client->readAsync(sizeof(PacketHeader), rbuf, _packetHandler, NULL);
 
         sigpath::sourceManager.stop();
-        comp.setPCMType(dsp::compression::PCM_TYPE_I16);
         compression = false;
 
         sendSampleRate(sampleRate);
@@ -323,23 +327,8 @@ namespace server {
         client->readAsync(sizeof(PacketHeader), rbuf, _packetHandler, NULL);
     }
 
-    void _testServerHandler(uint8_t* data, int count, void* ctx) {
-        if (compression) {
-            bb_pkt_hdr->type = PACKET_TYPE_BASEBAND_COMPRESSED;
-            bb_pkt_hdr->size = sizeof(PacketHeader) + (uint32_t)ZSTD_compressCCtx(cctx, &bbuf[sizeof(PacketHeader)], SERVER_MAX_PACKET_SIZE-sizeof(PacketHeader), data, count, 1);
-        }
-        else {
-            bb_pkt_hdr->type = PACKET_TYPE_BASEBAND;
-            bb_pkt_hdr->size = sizeof(PacketHeader) + count;
-            memcpy(&bbuf[sizeof(PacketHeader)], data, count);
-        }
-
-        if (client && client->isOpen()) { client->write(bb_pkt_hdr->size, bbuf); }
-    }
-
     void setInput(dsp::stream<dsp::complex_t>* stream) {
-        comp.setInput(stream);
-        iqFftHandler.setInput(stream);
+        sampleHandler.setInput(stream);
     }
 
     void commandHandler(Command cmd, uint8_t* data, int len) {

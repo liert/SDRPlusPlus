@@ -50,12 +50,7 @@ void SourceManager::selectSource(std::string name) {
     selectedHandler = sources[name];
     selectedHandler->selectHandler(selectedHandler->ctx);
     selectedName = name;
-    if (core::args["server"].b()) {
-        server::setInput(selectedHandler->stream);
-    }
-    else {
-        sigpath::iqFrontEnd.setInput(selectedHandler->stream);
-    }
+    server::setInput(selectedHandler->stream);
     // Set server input here
 }
 
