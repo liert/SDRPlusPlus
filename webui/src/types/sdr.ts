@@ -6,6 +6,12 @@ export type ModulationType = 'FLRC' | '2FSK' | 'GFSK' | 'CPFSK' | '4FSK' | 'OOK'
 
 export type MaskMode = 'auto' | '0x99' | '0x66' | 'none' | 'custom'
 
+export type FftWindowType = 'blackman_harris' | 'hann' | 'hamming' | 'blackman' | 'nuttall' | 'flat_top' | 'rectangular'
+
+export type ColormapType = 'turbo' | 'viridis' | 'plasma' | 'inferno' | 'electric' | 'hot' | 'greyscale'
+
+export type PeakDecaySpeed = 'fast' | 'medium' | 'slow' | 'infinite'
+
 export interface BackendDeviceInfo {
   serial: string
   name: string
@@ -72,8 +78,17 @@ export interface SpectrumSettings {
   minDb: number
   maxDb: number
   fftSize: number
+  fftWindow: FftWindowType
+  fftRate: number
   smoothing: number
-  colormap: 'turbo' | 'viridis' | 'plasma' | 'electric' | 'greyscale'
-  fillSpectrum: boolean
+  averagingMode: 'ema' | 'max' | 'off'
   peakHold: boolean
+  peakDecaySpeed: PeakDecaySpeed
+  colormap: ColormapType
+  waterfallSpeed: number
+  fillSpectrum: boolean
+  lineWidth: number
+  showGrid: boolean
+  splitRatio: number
+  autoScale: boolean
 }

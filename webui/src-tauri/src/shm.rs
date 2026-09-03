@@ -56,6 +56,8 @@ extern "system" {
     fn CloseHandle(handle: isize) -> i32;
 }
 
+pub const SDRPP_MAX_FFT_SIZE: usize = 4096;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ShmPacket {
@@ -83,7 +85,7 @@ pub struct ShmHeader {
     pub magic: u32,          // 0x53445250
     pub version: u32,        // 1
     pub seq: u32,            // Atomic increment per FFT frame
-    pub fft_size: u32,       // 1024
+    pub fft_size: u32,       // 512, 1024, 2048, 4096
     pub sample_rate: f64,    // 8000000.0
     pub center_freq: f64,    // 2400000000.0
     pub lna_gain: i32,
@@ -104,8 +106,16 @@ pub struct ShmHeader {
     pub packet_write_idx: u32,
     pub packets: [ShmPacket; 32],
 
+    // Additional FFT Info
+    pub fft_window: u32,
+    pub fft_rate: u32,
+
+    // Loaded File Info
+    pub file_loaded: u8,
+    pub current_file: [u8; 255],
+
     // FFT Data
-    pub fft_data: [f32; 1024],
+    pub fft_data: [f32; SDRPP_MAX_FFT_SIZE],
 }
 
 #[repr(C)]
@@ -118,6 +128,7 @@ pub struct ShmCmdBuffer {
     pub param_int2: i32,
     pub param_int3: i32,
     pub param_str: [u8; 64],
+    pub param_path: [u8; 512],
 }
 
 #[derive(Serialize)]
@@ -170,6 +181,16 @@ pub struct ShmStatusInfo {
     pub device_serial: String,
     pub devices: Vec<ShmDeviceInfoResult>,
     pub packets: Vec<ShmDecodedPacket>,
+    #[serde(rename = "fftSize")]
+    pub fft_size: u32,
+    #[serde(rename = "fftWindow")]
+    pub fft_window: u32,
+    #[serde(rename = "fftRate")]
+    pub fft_rate: u32,
+    #[serde(rename = "fileLoaded")]
+    pub file_loaded: bool,
+    #[serde(rename = "currentFile")]
+    pub current_file: String,
 }
 
 pub struct ShmManager {
@@ -247,15 +268,17 @@ impl ShmManager {
                 return None;
             }
 
+            let size = (hdr.fft_size as usize).clamp(256, SDRPP_MAX_FFT_SIZE);
+
             self.read_counter += 1;
             if self.read_counter % 120 == 1 {
-                log_to_file("INFO", "Tauri/Rust SHM", &format!("IPC read_fft_f32: seq={}, running={}, sampleRate={}, fft[0]={:.1} dBm, fft[512]={:.1} dBm",
-                    hdr.seq, hdr.running, hdr.sample_rate, hdr.fft_data[0], hdr.fft_data[512]));
+                log_to_file("INFO", "Tauri/Rust SHM", &format!("IPC read_fft_f32: seq={}, N={}, running={}, sampleRate={}, fft[0]={:.1} dBm, fft[{}]={:.1} dBm",
+                    hdr.seq, size, hdr.running, hdr.sample_rate, hdr.fft_data[0], size / 2, hdr.fft_data[size / 2]));
             }
 
             let slice = std::slice::from_raw_parts(
                 hdr.fft_data.as_ptr(),
-                1024,
+                size,
             );
             Some(slice.to_vec())
         }
@@ -277,6 +300,11 @@ impl ShmManager {
                 device_serial: "".to_string(),
                 devices: Vec::new(),
                 packets: Vec::new(),
+                fft_size: 1024,
+                fft_window: 0,
+                fft_rate: 60,
+                file_loaded: false,
+                current_file: String::new(),
             };
         }
 
@@ -297,6 +325,11 @@ impl ShmManager {
                     device_serial: "".to_string(),
                     devices: Vec::new(),
                     packets: Vec::new(),
+                    fft_size: 1024,
+                    fft_window: 0,
+                    fft_rate: 60,
+                    file_loaded: false,
+                    current_file: String::new(),
                 };
             }
 
@@ -380,6 +413,13 @@ impl ShmManager {
                 device_serial: serial_str,
                 devices: dev_list,
                 packets: new_packets,
+                fft_size: if hdr.fft_size > 0 { hdr.fft_size } else { 1024 },
+                fft_window: hdr.fft_window,
+                fft_rate: if hdr.fft_rate > 0 { hdr.fft_rate } else { 60 },
+                file_loaded: hdr.file_loaded != 0,
+                current_file: std::ffi::CStr::from_ptr(hdr.current_file.as_ptr() as *const i8)
+                    .to_string_lossy()
+                    .into_owned(),
             }
         }
     }
@@ -404,12 +444,20 @@ impl ShmManager {
 
             if let Some(lna) = params.get("lna").and_then(|v| v.as_i64()) {
                 cmd_buf.param_int1 = lna as i32;
+            } else if let Some(fft_size) = params.get("fftSize").and_then(|v| v.as_i64()) {
+                cmd_buf.param_int1 = fft_size as i32;
             }
+
             if let Some(vga) = params.get("vga").and_then(|v| v.as_i64()) {
                 cmd_buf.param_int2 = vga as i32;
+            } else if let Some(fft_window) = params.get("fftWindow").and_then(|v| v.as_i64()) {
+                cmd_buf.param_int2 = fft_window as i32;
             }
+
             if let Some(amp) = params.get("amp").and_then(|v| v.as_bool()) {
                 cmd_buf.param_int3 = if amp { 1 } else { 0 };
+            } else if let Some(fft_rate) = params.get("fftRate").and_then(|v| v.as_i64()) {
+                cmd_buf.param_int3 = fft_rate as i32;
             }
 
             if let Some(src) = params.get("source").and_then(|v| v.as_str()) {
@@ -417,6 +465,13 @@ impl ShmManager {
                 let s_bytes = src.as_bytes();
                 let slen = s_bytes.len().min(63);
                 cmd_buf.param_str[0..slen].copy_from_slice(&s_bytes[0..slen]);
+            }
+
+            if let Some(p) = params.get("path").and_then(|v| v.as_str()) {
+                cmd_buf.param_path = [0; 512];
+                let p_bytes = p.as_bytes();
+                let plen = p_bytes.len().min(511);
+                cmd_buf.param_path[0..plen].copy_from_slice(&p_bytes[0..plen]);
             }
 
             log_to_file("INFO", "Tauri/Rust IPC", &format!("send_command: cmd='{}', params={}", cmd, params));

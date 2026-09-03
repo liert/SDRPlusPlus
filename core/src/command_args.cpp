@@ -19,6 +19,7 @@ void CommandArgsParser::defineAll() {
         define('r', "root", "Root directory, where all config files are stored", root);
         define('s', "server", "Run in server mode");
         define('\0', "autostart", "Automatically start the SDR after loading");
+        define('\0', "from-gui", "Internal flag indicating launch from GUI");
 }
 
 int CommandArgsParser::parse(int argc, char* argv[]) {

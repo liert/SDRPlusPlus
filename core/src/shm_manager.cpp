@@ -36,34 +36,108 @@ namespace shm_manager {
     static CommandHandler customCmdHandler = nullptr;
 
     // === FFT Engine State ===
-    static const int FFT_SIZE = 1024;
+    static int currentFftSize = 1024;
+    static int currentWindowType = 0; // 0=Blackman-Harris, 1=Hann, 2=Hamming, 3=Blackman, 4=Nuttall, 5=Flat Top, 6=Rectangular
+    static int currentFftRate = 60;   // FPS
     static fftwf_complex* fftwIn = nullptr;
     static fftwf_complex* fftwOut = nullptr;
     static fftwf_plan fftPlan = nullptr;
-    static float windowLut[FFT_SIZE];
-    static float fftOutputDb[FFT_SIZE];
+    static float windowLut[SDRPP_MAX_FFT_SIZE];
+    static float fftOutputDb[SDRPP_MAX_FFT_SIZE];
     static std::mutex fftMutex;
     static std::chrono::steady_clock::time_point lastFftTime;
 
-    static void initFft() {
-        if (fftwIn) return;
-        fftwIn = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * FFT_SIZE);
-        fftwOut = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * FFT_SIZE);
-        fftPlan = fftwf_plan_dft_1d(FFT_SIZE, fftwIn, fftwOut, FFTW_FORWARD, FFTW_ESTIMATE);
-
-        // Precompute Blackman-Harris 4-term window
-        for (int i = 0; i < FFT_SIZE; i++) {
-            double a0 = 0.35875, a1 = 0.48829, a2 = 0.14128, a3 = 0.01168;
-            double f = (2.0 * M_PI * i) / (FFT_SIZE - 1);
-            windowLut[i] = (float)(a0 - a1 * cos(f) + a2 * cos(2.0 * f) - a3 * cos(3.0 * f));
+    static void computeWindowLut(int size, int windowType) {
+        if (size <= 0 || size > SDRPP_MAX_FFT_SIZE) size = 1024;
+        for (int i = 0; i < size; i++) {
+            double f = (2.0 * M_PI * i) / (size - 1);
+            switch (windowType) {
+                case 0: { // Blackman-Harris 4-term (-92 dB sidelobes)
+                    double a0 = 0.35875, a1 = 0.48829, a2 = 0.14128, a3 = 0.01168;
+                    windowLut[i] = (float)(a0 - a1 * cos(f) + a2 * cos(2.0 * f) - a3 * cos(3.0 * f));
+                    break;
+                }
+                case 1: { // Hann
+                    windowLut[i] = (float)(0.5 - 0.5 * cos(f));
+                    break;
+                }
+                case 2: { // Hamming
+                    windowLut[i] = (float)(0.54 - 0.46 * cos(f));
+                    break;
+                }
+                case 3: { // Blackman (3-term)
+                    windowLut[i] = (float)(0.42 - 0.5 * cos(f) + 0.08 * cos(2.0 * f));
+                    break;
+                }
+                case 4: { // Nuttall
+                    windowLut[i] = (float)(0.355768 - 0.487396 * cos(f) + 0.144232 * cos(2.0 * f) - 0.012604 * cos(3.0 * f));
+                    break;
+                }
+                case 5: { // Flat Top (High amplitude accuracy)
+                    windowLut[i] = (float)(0.21557895 - 0.41663158 * cos(f) + 0.277263158 * cos(2.0 * f) - 0.083578947 * cos(3.0 * f) + 0.006947368 * cos(4.0 * f));
+                    break;
+                }
+                case 6: { // Rectangular (None)
+                    windowLut[i] = 1.0f;
+                    break;
+                }
+                default: { // Fallback
+                    double a0 = 0.35875, a1 = 0.48829, a2 = 0.14128, a3 = 0.01168;
+                    windowLut[i] = (float)(a0 - a1 * cos(f) + a2 * cos(2.0 * f) - a3 * cos(3.0 * f));
+                    break;
+                }
+            }
         }
+    }
+
+    static void initFft(int size = 1024, int windowType = 0, int rate = 60) {
+        std::lock_guard<std::mutex> lock(fftMutex);
+        if (size != 512 && size != 1024 && size != 2048 && size != 4096) {
+            size = 1024;
+        }
+        currentFftSize = size;
+        currentWindowType = windowType;
+        currentFftRate = (rate >= 5 && rate <= 120) ? rate : 60;
+
+        if (fftPlan) {
+            fftwf_destroy_plan(fftPlan);
+            fftPlan = nullptr;
+        }
+        if (fftwIn) {
+            fftwf_free(fftwIn);
+            fftwIn = nullptr;
+        }
+        if (fftwOut) {
+            fftwf_free(fftwOut);
+            fftwOut = nullptr;
+        }
+
+        fftwIn = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * currentFftSize);
+        fftwOut = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * currentFftSize);
+        fftPlan = fftwf_plan_dft_1d(currentFftSize, fftwIn, fftwOut, FFTW_FORWARD, FFTW_ESTIMATE);
+
+        computeWindowLut(currentFftSize, currentWindowType);
         lastFftTime = std::chrono::steady_clock::now();
+
+#ifdef _WIN32
+        if (shmHeader) {
+            shmHeader->fftSize = currentFftSize;
+            shmHeader->fftWindow = currentWindowType;
+            shmHeader->fftRate = currentFftRate;
+        }
+#endif
     }
 
     static void cleanupFft() {
+        std::lock_guard<std::mutex> lock(fftMutex);
         if (fftPlan) { fftwf_destroy_plan(fftPlan); fftPlan = nullptr; }
         if (fftwIn) { fftwf_free(fftwIn); fftwIn = nullptr; }
         if (fftwOut) { fftwf_free(fftwOut); fftwOut = nullptr; }
+    }
+
+    void setFftParams(int fftSize, int windowType, int rate) {
+        initFft(fftSize, windowType, rate);
+        flog::info("⚡ [FFT Config] Reconfigured FFT: Size={0}, Window={1}, Rate={2} FPS", currentFftSize, currentWindowType, currentFftRate);
     }
 
     void updateDevices() {
@@ -126,14 +200,16 @@ namespace shm_manager {
         std::memset(shmHeader, 0, sizeof(ShmHeader));
         shmHeader->magic = SDRPP_SHM_MAGIC;
         shmHeader->version = 1;
-        shmHeader->fftSize = 1024;
+        shmHeader->fftSize = currentFftSize;
+        shmHeader->fftWindow = currentWindowType;
+        shmHeader->fftRate = currentFftRate;
         shmHeader->sampleRate = 8000000.0;
         shmHeader->centerFreq = 2400000000.0;
         shmHeader->lnaGain = 32;
         shmHeader->vgaGain = 20;
         shmHeader->running = 0;
         shmHeader->seq = 0;
-        for (int i = 0; i < 1024; i++) {
+        for (int i = 0; i < SDRPP_MAX_FFT_SIZE; i++) {
             shmHeader->fftData[i] = -120.0f; // Silence / Noise floor baseline
         }
 
@@ -185,62 +261,91 @@ namespace shm_manager {
     }
 
     void processIqSamples(const dsp::complex_t* samples, int count, double sampleRate) {
-        if (!samples || count < FFT_SIZE || !fftPlan) return;
+        if (!samples || count < currentFftSize || !fftPlan) return;
 
-        // Rate limit FFT to ~60 FPS (16ms)
+        // Rate limit FFT to configured rate (e.g. 60 FPS -> 16ms, 30 FPS -> 33ms)
         auto now = std::chrono::steady_clock::now();
+        int intervalMs = std::max(5, 1000 / currentFftRate);
         auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFftTime).count();
-        if (elapsedMs < 16) return;
+        if (elapsedMs < intervalMs) return;
         lastFftTime = now;
 
         std::unique_lock<std::mutex> lock(fftMutex, std::try_to_lock);
         if (!lock.owns_lock()) return;
 
-        // Slide dynamic offset across the buffer so FFT moves through time-domain IQ samples
-        static int slideOffset = 0;
-        int maxOffset = count - FFT_SIZE;
-        int startIdx = (maxOffset > 0) ? (slideOffset % (maxOffset + 1)) : 0;
-        slideOffset = (slideOffset + 3840) % (std::max(1, maxOffset + 1));
+        int n = currentFftSize;
+        int maxOffset = count - n;
 
-        // Apply window and copy into FFTW input
-        for (int i = 0; i < FFT_SIZE; i++) {
-            fftwIn[i][0] = samples[startIdx + i].re * windowLut[i];
-            fftwIn[i][1] = samples[startIdx + i].im * windowLut[i];
+        // Smart burst detection: scan chunks to capture burst packets in this frame
+        int startIdx = 0;
+        float maxChunkPwr = -1.0f;
+        int scanStep = std::max(512, n / 2);
+        for (int offset = 0; offset <= maxOffset; offset += scanStep) {
+            float pwrSum = 0.0f;
+            // Sample a fast subset
+            for (int s = 0; s < n; s += 8) {
+                float r = samples[offset + s].re;
+                float m = samples[offset + s].im;
+                pwrSum += r * r + m * m;
+            }
+            if (pwrSum > maxChunkPwr) {
+                maxChunkPwr = pwrSum;
+                startIdx = offset;
+            }
+        }
+
+        // DC offset removal across chosen window to eliminate 0 Hz hardware LO leakage
+        float dcI = 0.0f;
+        float dcQ = 0.0f;
+        for (int i = 0; i < n; i++) {
+            dcI += samples[startIdx + i].re;
+            dcQ += samples[startIdx + i].im;
+        }
+        dcI /= (float)n;
+        dcQ /= (float)n;
+
+        // Apply DC blocking and window, copy into FFTW input
+        for (int i = 0; i < n; i++) {
+            fftwIn[i][0] = (samples[startIdx + i].re - dcI) * windowLut[i];
+            fftwIn[i][1] = (samples[startIdx + i].im - dcQ) * windowLut[i];
         }
 
         fftwf_execute(fftPlan);
 
         // Compute power in dBm with proper 1/N normalization
-        int halfFft = FFT_SIZE / 2;
-        float norm = 1.0f / (float)FFT_SIZE;
-        for (int i = 0; i < FFT_SIZE; i++) {
-            int srcIdx = (i + halfFft) % FFT_SIZE;
+        int halfFft = n / 2;
+        float norm = 1.0f / (float)n;
+        for (int i = 0; i < n; i++) {
+            int srcIdx = (i + halfFft) % n;
             float re = fftwOut[srcIdx][0] * norm;
             float im = fftwOut[srcIdx][1] * norm;
             float pwr = re * re + im * im + 1e-12f;
             float dbm = 10.0f * log10f(pwr);
-            fftOutputDb[i] = std::max(-120.0f, std::min(10.0f, dbm));
+            fftOutputDb[i] = std::max(-140.0f, std::min(20.0f, dbm));
         }
 
         // Direct Ultra-Fast write into Windows Shared Memory (< 0.001 ms)
-        updateFft(fftOutputDb, FFT_SIZE);
+        updateFft(fftOutputDb, n);
 
         static uint64_t fftLogCounter = 0;
         if (++fftLogCounter % 120 == 0) {
             float minP = 100.0f, maxP = -150.0f;
-            for (int i = 0; i < FFT_SIZE; i++) {
+            for (int i = 0; i < n; i++) {
                 if (fftOutputDb[i] < minP) minP = fftOutputDb[i];
                 if (fftOutputDb[i] > maxP) maxP = fftOutputDb[i];
             }
-            flog::info("📊 [DSP FFT Pipeline] Active: {0} frames computed (seq={1}), Range: {2} dBm ~ {3} dBm",
-                       fftLogCounter, (uint32_t)shmHeader->seq, (int)minP, (int)maxP);
+            flog::info("📊 [DSP FFT Pipeline] Active: {0} frames computed (N={1}, seq={2}), Range: {3} dBm ~ {4} dBm",
+                       fftLogCounter, n, (uint32_t)shmHeader->seq, (int)minP, (int)maxP);
         }
     }
 
     void updateFft(const float* fftDb, int size) {
 #ifdef _WIN32
         if (!shmHeader || !fftDb || size <= 0) return;
-        int copySize = std::min(size, 1024);
+        int copySize = std::min(size, SDRPP_MAX_FFT_SIZE);
+        shmHeader->fftSize = copySize;
+        shmHeader->fftWindow = currentWindowType;
+        shmHeader->fftRate = currentFftRate;
         std::memcpy(shmHeader->fftData, fftDb, copySize * sizeof(float));
         MemoryBarrier();
         shmHeader->seq++;
@@ -291,7 +396,7 @@ namespace shm_manager {
 #endif
     }
 
-    void updateState(bool running, const std::string& sourceName, double centerFreq, double sampleRate, int lna, int vga, bool amp, bool biasT, const std::string& serial) {
+    void updateState(bool running, const std::string& sourceName, double centerFreq, double sampleRate, int lna, int vga, bool amp, bool biasT, const std::string& serial, bool fileLoaded, const std::string& currentFile) {
 #ifdef _WIN32
         if (!shmHeader) return;
         shmHeader->running = running ? 1 : 0;
@@ -301,9 +406,13 @@ namespace shm_manager {
         shmHeader->vgaGain = vga;
         shmHeader->ampEnable = amp ? 1 : 0;
         shmHeader->biasTEnable = biasT ? 1 : 0;
+        shmHeader->fileLoaded = fileLoaded ? 1 : 0;
         strncpy(shmHeader->sourceName, sourceName.c_str(), sizeof(shmHeader->sourceName) - 1);
         if (!serial.empty()) {
             strncpy(shmHeader->deviceSerial, serial.c_str(), sizeof(shmHeader->deviceSerial) - 1);
+        }
+        if (!currentFile.empty()) {
+            strncpy(shmHeader->currentFile, currentFile.c_str(), sizeof(shmHeader->currentFile) - 1);
         }
 #endif
     }
@@ -328,6 +437,18 @@ namespace shm_manager {
                 params["amp"] = (shmCmd->paramInt3 != 0);
             } else if (cmd == "set_source") {
                 params["source"] = std::string(shmCmd->paramStr);
+                if (shmCmd->paramPath[0] != 0) {
+                    params["path"] = std::string(shmCmd->paramPath);
+                }
+            } else if (cmd == "set_file_path") {
+                if (shmCmd->paramPath[0] != 0) {
+                    params["path"] = std::string(shmCmd->paramPath);
+                }
+                params["loop"] = (shmCmd->paramInt1 != 0);
+            } else if (cmd == "set_fft" || cmd == "set_fft_params") {
+                if (shmCmd->paramInt1 > 0) params["fftSize"] = shmCmd->paramInt1;
+                if (shmCmd->paramInt2 >= 0) params["fftWindow"] = shmCmd->paramInt2;
+                if (shmCmd->paramInt3 > 0) params["fftRate"] = shmCmd->paramInt3;
             } else if (cmd == "get_devices" || cmd == "refresh_devices") {
                 updateDevices();
             }

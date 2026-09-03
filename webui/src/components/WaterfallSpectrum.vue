@@ -10,10 +10,12 @@ import {
   hasLiveHackRfData,
   dspIpcFps,
   dspSeq,
+  autoScaleFftRange,
   logUi
 } from '@/composables/useSdrEngine'
-import { liveHackRfFft } from '@/composables/useHackRf'
+import { liveHackRfFft, liveFftSize } from '@/composables/useHackRf'
 import { generateColormapLut } from '@/composables/useColormaps'
+import { Zap, Sparkles } from 'lucide-vue-next'
 
 const spectrumCanvas = ref<HTMLCanvasElement | null>(null)
 const waterfallCanvas = ref<HTMLCanvasElement | null>(null)
@@ -33,10 +35,9 @@ let activeWaterfallIdx = 0
 let cachedRowImg: ImageData | null = null
 let cachedRowWidth = 0
 
-// Simulated / Live FFT power spectrum (1024 bins)
-const fftSize = 1024
-const currentFft = new Float32Array(fftSize).fill(-90)
-const peakFft = new Float32Array(fftSize).fill(-120)
+// Dynamic FFT power spectrum buffers (up to 4096 bins)
+let currentFft = new Float32Array(4096).fill(-100)
+let peakFft = new Float32Array(4096).fill(-120)
 
 // Dragging & VFO interaction state
 const isDraggingVfo = ref(false)
@@ -46,6 +47,10 @@ let activeCanvasWidth = 1000
 
 watch(() => spectrumSettings.colormap, (newMap) => {
   colormapLut = generateColormapLut(newMap)
+})
+
+watch(() => spectrumSettings.splitRatio, () => {
+  handleResize()
 })
 
 function getRowImageData(ctx: CanvasRenderingContext2D, width: number): ImageData {
@@ -63,7 +68,8 @@ function handleResize() {
   const h = Math.max(100, Math.floor(rect.height))
   activeCanvasWidth = w
 
-  const specH = Math.floor(h * 0.38)
+  const ratio = spectrumSettings.splitRatio || 0.38
+  const specH = Math.max(80, Math.min(h - 80, Math.floor(h * ratio)))
   const wtfH = h - specH
 
   spectrumCanvas.value.width = w
@@ -90,25 +96,33 @@ function handleResize() {
 function updateSimulatedFft(time: number) {
   const minDb = spectrumSettings.minDb
   const maxDb = spectrumSettings.maxDb
+  const n = Math.min(spectrumSettings.fftSize || 1024, liveHackRfFft.length || 1024)
+
+  // Determine peak decay step based on peakDecaySpeed setting
+  let decayRate = 0.25
+  if (spectrumSettings.peakDecaySpeed === 'fast') decayRate = 0.65
+  else if (spectrumSettings.peakDecaySpeed === 'medium') decayRate = 0.25
+  else if (spectrumSettings.peakDecaySpeed === 'slow') decayRate = 0.08
+  else if (spectrumSettings.peakDecaySpeed === 'infinite') decayRate = 0.0
 
   // Case 1: Real-time Live FFT from C++ Backend when streaming
   if (isPlaying.value && hasLiveHackRfData.value) {
-    for (let i = 0; i < fftSize; i++) {
+    const alpha = 1.0 - (spectrumSettings.smoothing || 0.65)
+    for (let i = 0; i < n; i++) {
       const liveVal = liveHackRfFft[i]
-      const alpha = 1.0 - spectrumSettings.smoothing
       currentFft[i] = currentFft[i] * (1 - alpha) + liveVal * alpha
 
       if (currentFft[i] > peakFft[i]) {
         peakFft[i] = currentFft[i]
       } else {
-        peakFft[i] -= 0.25
+        peakFft[i] -= decayRate
       }
     }
     return
   }
 
   // Case 2: Standby idle noise floor when stopped
-  for (let i = 0; i < fftSize; i++) {
+  for (let i = 0; i < n; i++) {
     const alpha = 0.2
     const idleNoise = minDb + Math.random() * 3.0
     currentFft[i] = currentFft[i] * (1 - alpha) + idleNoise * alpha
@@ -121,45 +135,49 @@ let renderLogCounter = 0
 function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: number) {
   ctx.clearRect(0, 0, width, height)
 
-  renderLogCounter++
-  if (renderLogCounter % 180 === 1) {
-    logUi(`[Canvas Spectrum] w=${width}, h=${height}, isPlaying=${isPlaying.value}, hasData=${hasLiveHackRfData.value}, centerDb=${currentFft[512].toFixed(1)} dBm, liveCenterDb=${liveHackRfFft[512].toFixed(1)} dBm`)
-  }
-
+  const n = Math.min(spectrumSettings.fftSize || 1024, liveHackRfFft.length || 1024)
   const minDb = spectrumSettings.minDb
   const maxDb = spectrumSettings.maxDb
-  const dbRange = maxDb - minDb
+  const dbRange = Math.max(10, maxDb - minDb)
 
-  // 1. Draw Grid & dB Lines
-  ctx.strokeStyle = '#1e2433'
-  ctx.lineWidth = 1
-  ctx.fillStyle = '#64748b'
-  ctx.font = '10px "Cascadia Code", monospace'
-
-  for (let db = maxDb; db >= minDb; db -= 15) {
-    const y = ((maxDb - db) / dbRange) * height
-    ctx.beginPath()
-    ctx.moveTo(0, y)
-    ctx.lineTo(width, y)
-    ctx.stroke()
-    ctx.fillText(`${db} dBm`, 6, y - 4)
+  renderLogCounter++
+  if (renderLogCounter % 180 === 1) {
+    logUi(`[Canvas Spectrum] w=${width}, h=${height}, N=${n}, isPlaying=${isPlaying.value}, centerDb=${currentFft[Math.floor(n / 2)].toFixed(1)} dBm`)
   }
 
-  // 2. Draw Frequency Grid
-  const numFreqTicks = 8
-  for (let t = 0; t <= numFreqTicks; t++) {
-    const x = (t / numFreqTicks) * width
-    ctx.beginPath()
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, height)
-    ctx.stroke()
+  // 1. Draw Grid & dB Lines (if enabled)
+  if (spectrumSettings.showGrid) {
+    ctx.strokeStyle = '#1e2433'
+    ctx.lineWidth = 1
+    ctx.fillStyle = '#64748b'
+    ctx.font = '10px "Cascadia Code", monospace'
 
-    const freqHz = sourceConfig.centerFreqHz + (t / numFreqTicks - 0.5) * sourceConfig.sampleRateHz
-    const freqStr = (freqHz / 1e6).toFixed(3) + ' MHz'
-    ctx.fillText(freqStr, x + 4, height - 6)
+    const step = dbRange > 80 ? 20 : 10
+    for (let db = maxDb; db >= minDb; db -= step) {
+      const y = ((maxDb - db) / dbRange) * height
+      ctx.beginPath()
+      ctx.moveTo(0, y)
+      ctx.lineTo(width, y)
+      ctx.stroke()
+      ctx.fillText(`${db} dBm`, 6, y - 4)
+    }
+
+    // Frequency Grid
+    const numFreqTicks = 8
+    for (let t = 0; t <= numFreqTicks; t++) {
+      const x = (t / numFreqTicks) * width
+      ctx.beginPath()
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, height)
+      ctx.stroke()
+
+      const freqHz = sourceConfig.centerFreqHz + (t / numFreqTicks - 0.5) * sourceConfig.sampleRateHz
+      const freqStr = (freqHz / 1e6).toFixed(3) + ' MHz'
+      ctx.fillText(freqStr, x + 4, height - 6)
+    }
   }
 
-  // 3. Draw VFO Highlight Band on Spectrum
+  // 2. Draw VFO Highlight Band on Spectrum
   const vfoCenterX = width * (0.5 + vfo.offsetHz / sourceConfig.sampleRateHz)
   const vfoWidthPx = (vfo.bandwidthHz / sourceConfig.sampleRateHz) * width
   const vfoLeft = vfoCenterX - vfoWidthPx / 2
@@ -174,13 +192,13 @@ function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: nu
   ctx.lineTo(vfoCenterX, height)
   ctx.stroke()
 
-  // 4. Draw Peak Hold Line
+  // 3. Draw Peak Hold Line
   if (spectrumSettings.peakHold) {
     ctx.strokeStyle = '#60a5fa'
     ctx.lineWidth = 1
     ctx.beginPath()
-    for (let i = 0; i < fftSize; i++) {
-      const x = (i / (fftSize - 1)) * width
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * width
       const y = Math.min(height, Math.max(0, ((maxDb - peakFft[i]) / dbRange) * height))
       if (i === 0) ctx.moveTo(x, y)
       else ctx.lineTo(x, y)
@@ -188,15 +206,15 @@ function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: nu
     ctx.stroke()
   }
 
-  // 5. Draw Active Spectrum Line with Gradient Fill
+  // 4. Draw Active Spectrum Line with Gradient Fill
   const grad = ctx.createLinearGradient(0, 0, 0, height)
-  grad.addColorStop(0, 'rgba(6, 182, 212, 0.4)')
-  grad.addColorStop(0.6, 'rgba(59, 130, 246, 0.15)')
+  grad.addColorStop(0, 'rgba(6, 182, 212, 0.45)')
+  grad.addColorStop(0.6, 'rgba(59, 130, 246, 0.18)')
   grad.addColorStop(1, 'rgba(15, 23, 42, 0.0)')
 
   ctx.beginPath()
-  for (let i = 0; i < fftSize; i++) {
-    const x = (i / (fftSize - 1)) * width
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * width
     const y = Math.min(height, Math.max(0, ((maxDb - currentFft[i]) / dbRange) * height))
     if (i === 0) ctx.moveTo(x, y)
     else ctx.lineTo(x, y)
@@ -211,30 +229,30 @@ function renderSpectrum(ctx: CanvasRenderingContext2D, width: number, height: nu
   }
 
   ctx.strokeStyle = '#22d3ee'
-  ctx.lineWidth = 1.5
+  ctx.lineWidth = spectrumSettings.lineWidth || 1.5
   ctx.beginPath()
-  for (let i = 0; i < fftSize; i++) {
-    const x = (i / (fftSize - 1)) * width
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * width
     const y = Math.min(height, Math.max(0, ((maxDb - currentFft[i]) / dbRange) * height))
     if (i === 0) ctx.moveTo(x, y)
     else ctx.lineTo(x, y)
   }
   ctx.stroke()
 
-  // 6. Draw Telemetry HUD
-  if (width > 300) {
+  // 5. Draw Telemetry HUD
+  if (width > 320) {
     ctx.fillStyle = 'rgba(15, 23, 42, 0.85)'
-    ctx.fillRect(width - 245, 6, 238, 22)
+    ctx.fillRect(width - 255, 6, 248, 22)
     ctx.strokeStyle = '#334155'
     ctx.lineWidth = 1
-    ctx.strokeRect(width - 245, 6, 238, 22)
+    ctx.strokeRect(width - 255, 6, 248, 22)
 
     ctx.fillStyle = isPlaying.value ? '#34d399' : '#94a3b8'
     ctx.font = '10px "Cascadia Code", monospace'
     const hudText = isPlaying.value
-      ? `⚡ SHM: ${dspIpcFps.value || 60} FPS | Seq: ${dspSeq.value}`
+      ? `⚡ SHM: ${dspIpcFps.value || spectrumSettings.fftRate} FPS | N=${n} | Seq:${dspSeq.value}`
       : `⏸️ 待机中 (点击启动采集)`
-    ctx.fillText(hudText, width - 238, 21)
+    ctx.fillText(hudText, width - 248, 21)
   }
 }
 
@@ -245,23 +263,21 @@ function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: n
   const dstCanvas = activeWaterfallIdx === 0 ? canvasB : canvasA
   const dstCtx = activeWaterfallIdx === 0 ? ctxB : ctxA
 
-  if (renderLogCounter % 180 === 1) {
-    logUi(`[Canvas Waterfall] w=${width}, h=${height}, isPlaying=${isPlaying.value}, hasData=${hasLiveHackRfData.value}, activeIdx=${activeWaterfallIdx}`)
-  }
+  const n = Math.min(spectrumSettings.fftSize || 1024, liveHackRfFft.length || 1024)
+  const spd = Math.max(1, spectrumSettings.waterfallSpeed || 1)
 
   // 1. Advance waterfall buffer smoothly ONLY when streaming
   if (isPlaying.value && hasLiveHackRfData.value) {
-    // Blit from srcCanvas to dstCanvas with 1px downward shift (100% valid GPU texture copy)
-    dstCtx.drawImage(srcCanvas, 0, 0, width, height - 1, 0, 1, width, height - 1)
+    dstCtx.drawImage(srcCanvas, 0, 0, width, height - spd, 0, spd, width, height - spd)
 
     const rowImg = getRowImageData(dstCtx, width)
     const minDb = spectrumSettings.minDb
     const maxDb = spectrumSettings.maxDb
-    const dbRange = maxDb - minDb
+    const dbRange = Math.max(10, maxDb - minDb)
 
     const data = rowImg.data
     for (let x = 0; x < width; x++) {
-      const binIdx = Math.floor((x / width) * fftSize)
+      const binIdx = Math.floor((x / width) * n)
       const val = currentFft[binIdx]
       const norm = Math.min(1, Math.max(0, (val - minDb) / dbRange))
       const lutIdx = Math.floor(norm * 255)
@@ -273,7 +289,9 @@ function renderWaterfall(ctx: CanvasRenderingContext2D, width: number, height: n
       data[px + 3] = 255
     }
 
-    dstCtx.putImageData(rowImg, 0, 0)
+    for (let dy = 0; dy < spd; dy++) {
+      dstCtx.putImageData(rowImg, 0, dy)
+    }
     activeWaterfallIdx = 1 - activeWaterfallIdx
   }
 
@@ -393,28 +411,70 @@ onUnmounted(() => {
 <template>
   <div ref="containerRef" class="relative w-full h-full flex flex-col bg-sdr-dark select-none overflow-hidden border border-sdr-border rounded-lg shadow-inner">
     <!-- Top Visual Toolbar Controls -->
-    <div class="absolute top-2 right-3 z-20 flex items-center gap-2 bg-sdr-panel/85 backdrop-blur-md px-3 py-1.5 rounded-md border border-sdr-border text-xs">
-      <span class="text-slate-400 font-mono">
+    <div class="absolute top-2 right-3 z-20 flex items-center gap-2 bg-sdr-panel/90 backdrop-blur-md px-2.5 py-1.5 rounded-lg border border-sdr-border text-xs shadow-lg">
+      <!-- VFO Readout -->
+      <span class="text-slate-400 font-mono text-[11px]">
         VFO: <b class="text-blue-400">{{ (vfo.offsetHz >= 0 ? '+' : '') + (vfo.offsetHz / 1e3).toFixed(1) }} kHz</b>
       </span>
       <div class="h-3.5 w-px bg-sdr-border"></div>
-      <span class="text-slate-400 font-mono">
+
+      <!-- Bandwidth -->
+      <span class="text-slate-400 font-mono text-[11px]">
         BW: <b class="text-emerald-400">{{ (vfo.bandwidthHz / 1e3).toFixed(0) }} kHz</b>
       </span>
       <div class="h-3.5 w-px bg-sdr-border"></div>
 
+      <!-- Quick FFT Size Pill Switcher -->
+      <div class="flex items-center bg-slate-900 border border-slate-700/80 rounded p-0.5 gap-0.5">
+        <button
+          v-for="s in [1024, 2048, 4096]"
+          :key="s"
+          @click="spectrumSettings.fftSize = s"
+          :class="[
+            'px-1.5 py-0.5 rounded text-[10px] font-mono font-bold transition-all',
+            spectrumSettings.fftSize === s
+              ? 'bg-blue-600 text-white shadow'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+          ]"
+        >
+          {{ s }}
+        </button>
+      </div>
+
+      <div class="h-3.5 w-px bg-sdr-border"></div>
+
+      <!-- Quick Auto Scale Button -->
+      <button
+        @click="autoScaleFftRange"
+        class="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-cyan-300 rounded text-[10px] font-mono font-medium flex items-center gap-1 border border-slate-700 transition-colors"
+        title="自动调整幅度范围"
+      >
+        <Zap class="w-3 h-3 text-amber-300" />
+        <span>Auto-dB</span>
+      </button>
+
+      <div class="h-3.5 w-px bg-sdr-border"></div>
+
       <!-- Colormap Dropdown -->
-      <select v-model="spectrumSettings.colormap" class="bg-sdr-dark border border-sdr-border rounded px-2 py-0.5 text-slate-300 focus:outline-none focus:border-blue-500 font-sans text-xs">
+      <select
+        v-model="spectrumSettings.colormap"
+        class="bg-sdr-dark border border-sdr-border rounded px-2 py-0.5 text-slate-300 focus:outline-none focus:border-blue-500 font-sans text-[11px] cursor-pointer"
+      >
         <option value="turbo">Turbo 色谱</option>
         <option value="viridis">Viridis 翠绿</option>
         <option value="plasma">Plasma 等离子</option>
+        <option value="inferno">Inferno 地狱火</option>
         <option value="electric">Electric 电光</option>
+        <option value="hot">Hot 热力图</option>
         <option value="greyscale">Greyscale 灰阶</option>
       </select>
     </div>
 
     <!-- 1. Spectrum Canvas Area -->
-    <div class="relative w-full flex-[0.38] min-h-[140px] cursor-crosshair">
+    <div
+      class="relative w-full cursor-crosshair overflow-hidden"
+      :style="{ height: `${Math.round((spectrumSettings.splitRatio || 0.38) * 100)}%` }"
+    >
       <canvas
         ref="spectrumCanvas"
         class="w-full h-full block"
@@ -424,12 +484,14 @@ onUnmounted(() => {
     </div>
 
     <!-- Divider Bar -->
-    <div class="h-1 bg-sdr-border w-full flex items-center justify-center">
+    <div class="h-1 bg-sdr-border w-full flex items-center justify-center shrink-0">
       <div class="w-12 h-0.5 bg-slate-600 rounded"></div>
     </div>
 
     <!-- 2. Waterfall Canvas Area -->
-    <div class="relative w-full flex-[0.62] cursor-crosshair">
+    <div
+      class="relative w-full cursor-crosshair flex-1 overflow-hidden"
+    >
       <canvas
         ref="waterfallCanvas"
         class="w-full h-full block"

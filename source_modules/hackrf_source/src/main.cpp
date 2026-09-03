@@ -287,15 +287,18 @@ private:
         hackrf_set_lna_gain(_this->openDev, (uint32_t)_this->lna);
         hackrf_set_vga_gain(_this->openDev, (uint32_t)_this->vga);
 
+        _this->stream.clearWriteStop();
+        _this->running = true;
+
         err = (hackrf_error)hackrf_start_rx(_this->openDev, callback, _this);
         if (err != HACKRF_SUCCESS) {
+            _this->running = false;
             flog::error("Could not start HackRF RX stream: {0}", hackrf_error_name(err));
             hackrf_close(_this->openDev);
             _this->openDev = nullptr;
             return;
         }
 
-        _this->running = true;
         flog::info("HackRFSourceModule '{0}': Start RX streaming successfully!", _this->name);
     }
 
@@ -469,22 +472,27 @@ public:
             hackrf_set_baseband_filter_bandwidth(instance->openDev, hackrf_compute_baseband_filter_bw(sr * 0.75));
         }
     }
+    static void selectDeviceSerial(const char* serial) {
+        if (!instance || !serial) return;
+        std::lock_guard<std::mutex> lock(instance->devMtx);
+        instance->selectBySerial(serial);
+        flog::info("HackRFSourceModule: selected serial '{0}'", serial);
+    }
 
 private:
     static inline std::atomic<uint64_t> transferCount{0};
     static int callback(hackrf_transfer* transfer) {
         HackRFSourceModule* _this = (HackRFSourceModule*)transfer->rx_ctx;
-        if (!_this || !_this->running) return -1;
+        if (!_this || !_this->running) return 0;
         volk_8i_s32f_convert_32f((float*)_this->stream.writeBuf, (int8_t*)transfer->buffer, 128.0f, transfer->valid_length);
         
         uint64_t cnt = ++transferCount;
-        if (cnt % 120 == 0) {
+        if (cnt == 1 || cnt % 120 == 0) {
             flog::info("⚡ [HackRF Stream] USB Bulk Transfer Active: {0} blocks received ({1} MB transferred)", cnt, (cnt * 262144) / (1024 * 1024));
         }
 
         if (!_this->stream.swap(transfer->valid_length / 2)) {
-            if (!_this->running) return -1;
-            return 0;
+            return 0; // Drop frame if reader is busy, do NOT return -1 to abort stream!
         }
         return 0;
     }
@@ -543,5 +551,8 @@ extern "C" {
     }
     MOD_EXPORT void hackrf_set_samplerate(int sr) {
         HackRFSourceModule::setSampleRateValue(sr);
+    }
+    MOD_EXPORT void hackrf_select_serial(const char* serial) {
+        HackRFSourceModule::selectDeviceSerial(serial);
     }
 }

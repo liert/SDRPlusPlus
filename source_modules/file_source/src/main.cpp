@@ -92,38 +92,62 @@ public:
         return enabled;
     }
 
-    void loadFile(const std::string& path) {
+    bool loadFile(const std::string& rawPath) {
         if (reader != NULL) {
             reader->close();
             delete reader;
             reader = NULL;
         }
+        currentFilePath = "";
+
+        if (rawPath.empty()) {
+            flog::warn("FileSource: No file specified. Please select an IQ file.");
+            fileSelect.setPath("", false);
+            return false;
+        }
+
+        std::string path = rawPath;
+        if (!std::filesystem::is_regular_file(toFsPath(path))) {
+            flog::error("FileSource: File does not exist: {0}", rawPath);
+            fileSelect.setPath(rawPath, false);
+            return false;
+        }
+
         try {
+            // First check if filename has embedded sample rate
+            std::string filename = toFsPath(path).filename().string();
+            double detectedSr = getSampleRateFromFilename(filename);
+            if (detectedSr > 0) {
+                sampleRate = detectedSr;
+            }
+
             reader = new WavReader(path, (uint32_t)sampleRate);
             if (!reader->isValid()) {
                 delete reader;
                 reader = NULL;
-                flog::error("Failed to open file: {0}", path);
-                return;
+                flog::error("Failed to parse file: {0}", path);
+                return false;
             }
             if (reader->isWavFile()) {
                 sampleRate = reader->getSampleRate();
                 formatType = FORMAT_WAV;
             } else {
                 std::string ext = toFsPath(path).extension().string();
-                if (ext == ".iq" || ext == ".raw") {
+                if (ext == ".iq" || ext == ".raw" || ext == ".bin") {
                     formatType = FORMAT_RAW_INT8;
                 }
             }
             core::setInputSampleRate(sampleRate);
-            std::string filename = toFsPath(path).filename().string();
             centerFreq = getFrequency(filename);
+            sigpath::sourceManager.tune(centerFreq);
             currentFilePath = path;
             fileSelect.setPath(path, false);
-            flog::info("FileSource loaded: {0} (SR: {1} Hz, Freq: {2} Hz)", path, sampleRate, centerFreq);
+            flog::info("FileSource successfully loaded: {0} (SR: {1:.3f} MSPS, Freq: {2:.3f} MHz)", path, sampleRate / 1e6, centerFreq / 1e6);
+            return true;
         }
         catch (const std::exception& e) {
-            flog::error("Error loading file: {0}", e.what());
+            flog::error("Error loading file {0}: {1}", path, e.what());
+            return false;
         }
     }
 
@@ -162,29 +186,14 @@ private:
         FileSourceModule* _this = (FileSourceModule*)ctx;
         if (_this->running) { return; }
 
-        if (_this->reader == NULL) {
-            // Try auto-discovering sample IQ file
-            std::vector<std::string> candidates = {
-                "fresh_pairing_2400_8.iq",
-                "../fresh_pairing_2400_8.iq",
-                "webui/public/fresh_pairing_2400_8.iq"
-            };
-            for (const auto& c : candidates) {
-                if (std::filesystem::is_regular_file(toFsPath(c))) {
-                    _this->loadFile(c);
-                    break;
-                }
-            }
-        }
-
-        if (_this->reader == NULL) {
-            flog::warn("FileSource: Cannot start, no IQ file loaded!");
+        if (_this->reader == NULL || !_this->reader->isValid()) {
+            flog::error("FileSource: Cannot start, no valid IQ file loaded! Please select an IQ file first.");
             return;
         }
 
         _this->running = true;
         _this->workerThread = std::thread(worker, _this);
-        flog::info("FileSourceModule '{0}': Start streaming IQ file!", _this->name);
+        flog::info("FileSourceModule '{0}': Start streaming IQ file: {1}", _this->name, _this->currentFilePath);
     }
 
     static void stop(void* ctx) {
@@ -306,13 +315,42 @@ private:
         }
     }
 
+    double getSampleRateFromFilename(std::string filename) {
+        // Match patterns like _2403_8.iq or _8M.iq or _8000000Hz
+        std::regex exprSr("_([0-9]+)M(?:SPS)?\\.", std::regex_constants::icase);
+        std::smatch matches;
+        if (std::regex_search(filename, matches, exprSr)) {
+            return std::atof(matches[1].str().c_str()) * 1000000.0;
+        }
+        std::regex exprSr2("_[0-9]+_([0-9]{1,2})\\.");
+        if (std::regex_search(filename, matches, exprSr2)) {
+            double msps = std::atof(matches[1].str().c_str());
+            if (msps >= 1.0 && msps <= 60.0) {
+                return msps * 1000000.0;
+            }
+        }
+        return 0.0;
+    }
+
     double getFrequency(std::string filename) {
         std::regex expr("[0-9]+Hz");
         std::smatch matches;
         std::regex_search(filename, matches, expr);
-        if (matches.empty()) { return 2400000000.0; } // Default 2.4 GHz for H12
-        std::string freqStr = matches[0].str();
-        return std::atof(freqStr.substr(0, freqStr.size() - 2).c_str());
+        if (!matches.empty()) {
+            std::string freqStr = matches[0].str();
+            return std::atof(freqStr.substr(0, freqStr.size() - 2).c_str());
+        }
+
+        // Match patterns like _2403_8 or 2403MHz
+        std::regex expr2("_([0-9]{4,5})_");
+        if (std::regex_search(filename, matches, expr2)) {
+            double mhz = std::atof(matches[1].str().c_str());
+            if (mhz >= 100.0 && mhz <= 6000.0) {
+                return mhz * 1000000.0;
+            }
+        }
+
+        return 2400000000.0; // Default 2.4 GHz for H12
     }
 
 public:
@@ -355,11 +393,13 @@ MOD_EXPORT void _END_() {
 }
 
 extern "C" {
-    MOD_EXPORT void file_source_set_path(const char* path, bool loop) {
+    MOD_EXPORT bool file_source_set_path(const char* path, bool loop) {
         if (FileSourceModule::instance && path) {
-            FileSourceModule::instance->loadFile(path);
+            bool ok = FileSourceModule::instance->loadFile(path);
             FileSourceModule::instance->loopMode = loop;
+            return ok;
         }
+        return false;
     }
     MOD_EXPORT void file_source_set_samplerate(double sr) {
         if (FileSourceModule::instance) {
@@ -368,5 +408,17 @@ extern "C" {
                 FileSourceModule::instance->reader->setSampleRate((uint32_t)sr);
             }
         }
+    }
+    MOD_EXPORT bool file_source_has_file() {
+        if (FileSourceModule::instance && FileSourceModule::instance->reader) {
+            return FileSourceModule::instance->reader->isValid();
+        }
+        return false;
+    }
+    MOD_EXPORT const char* file_source_get_path() {
+        if (FileSourceModule::instance) {
+            return FileSourceModule::instance->currentFilePath.c_str();
+        }
+        return "";
     }
 }

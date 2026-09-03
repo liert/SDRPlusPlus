@@ -68,6 +68,7 @@ void SourceManager::start() {
     if (selectedHandler == NULL) {
         return;
     }
+    server::setInput(selectedHandler->stream);
     selectedHandler->startHandler(selectedHandler->ctx);
 }
 

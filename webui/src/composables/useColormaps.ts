@@ -18,6 +18,14 @@ export function generateColormapLut(name: string): Uint8ClampedArray {
       r = Math.min(1, Math.max(0, -0.05 + 1.6 * t - 0.6 * t * t))
       g = Math.min(1, Math.max(0, 0.1 + 1.2 * t - 0.4 * t * t))
       b = Math.min(1, Math.max(0, 0.3 + 0.9 * t - 1.2 * t * t))
+    } else if (name === 'inferno') {
+      r = Math.min(1, Math.max(0, 0.05 + 1.8 * t * t))
+      g = Math.min(1, Math.max(0, -0.1 + 1.2 * Math.pow(t, 1.8)))
+      b = Math.min(1, Math.max(0, 0.4 * t + 0.6 * Math.pow(t, 4.0)))
+    } else if (name === 'hot') {
+      r = Math.min(1, Math.max(0, t * 2.8))
+      g = Math.min(1, Math.max(0, (t - 0.35) * 2.5))
+      b = Math.min(1, Math.max(0, (t - 0.75) * 4.0))
     } else if (name === 'electric') {
       if (t < 0.2) { r = 0; g = 0; b = t * 5 }
       else if (t < 0.5) { r = 0; g = (t - 0.2) * 3.33; b = 1 }

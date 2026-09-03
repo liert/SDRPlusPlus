@@ -9,7 +9,9 @@ import {
   validCrcCount,
   crcSuccessRate,
   fps,
-  isBackendConnected
+  isBackendConnected,
+  fileErrorNotice,
+  adjustCenterFreq
 } from '@/composables/useSdrEngine'
 import {
   Play,
@@ -21,7 +23,8 @@ import {
   Layers,
   Maximize2,
   Zap,
-  Terminal
+  Terminal,
+  AlertTriangle
 } from 'lucide-vue-next'
 import LogViewerModal from './LogViewerModal.vue'
 
@@ -60,6 +63,12 @@ function formatFreq(freqHz: number): string {
         <span>{{ isPlaying ? (currentLang === 'zh' ? '停止 (Stop)' : 'Stop') : (currentLang === 'zh' ? '启动 (Play)' : 'Start') }}</span>
       </button>
 
+      <!-- Missing File Warning Toast Alert in TopBar -->
+      <div v-if="fileErrorNotice" class="flex items-center gap-1.5 px-2.5 py-1 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs animate-bounce font-medium">
+        <AlertTriangle class="w-3.5 h-3.5 text-rose-400 shrink-0" />
+        <span>{{ fileErrorNotice }}</span>
+      </div>
+
       <!-- Source & C++ Backend Status Badge & Log Trigger -->
       <div class="hidden sm:flex items-center gap-2 bg-sdr-dark/80 border border-sdr-border px-2.5 py-1 rounded text-xs font-mono">
         <Radio class="w-3.5 h-3.5 text-cyan-400" />
@@ -91,15 +100,35 @@ function formatFreq(freqHz: number): string {
       </div>
     </div>
 
-    <!-- Center: Large Digital Tuner Display -->
-    <div class="flex items-center gap-3 bg-sdr-dark/95 border border-sdr-border px-4 py-1 rounded-lg shadow-inner">
-      <div class="flex flex-col items-center">
+    <!-- Center: Large Digital Tuner Display with wheel & step support -->
+    <div
+      class="flex items-center gap-1.5 bg-sdr-dark/95 border border-sdr-border px-2.5 py-1 rounded-lg shadow-inner select-none cursor-pointer"
+      @wheel.prevent="(e) => adjustCenterFreq(e.deltaY < 0 ? 100000 : -100000)"
+      title="可直接在此处使用鼠标滚轮微调中心频率 (±100kHz)"
+    >
+      <button
+        @click.stop="adjustCenterFreq(-1e6)"
+        class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-400 hover:text-cyan-300 text-[10px] font-mono font-bold transition-colors"
+        title="-1 MHz"
+      >
+        -1M
+      </button>
+
+      <div class="flex flex-col items-center px-1">
         <span class="text-[9px] text-slate-500 uppercase tracking-widest font-sans font-semibold">中心频率 (Center Freq)</span>
         <div class="flex items-baseline gap-1 font-mono font-bold tracking-wider text-lg text-cyan-300">
           <span>{{ formatFreq(sourceConfig.centerFreqHz) }}</span>
           <span class="text-[10px] text-slate-400 font-sans">MHz</span>
         </div>
       </div>
+
+      <button
+        @click.stop="adjustCenterFreq(1e6)"
+        class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-400 hover:text-cyan-300 text-[10px] font-mono font-bold transition-colors"
+        title="+1 MHz"
+      >
+        +1M
+      </button>
     </div>
 
     <!-- Right: View Switcher, Stats & Language -->
